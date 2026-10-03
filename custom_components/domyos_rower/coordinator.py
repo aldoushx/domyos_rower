@@ -39,7 +39,8 @@ from .const import (
     FTMS_STROKE_IDLE,
     POLL_INTERVAL,
     PROP_NO_DATA_TIMEOUT,
-    RETRY_DELAY,
+    MIN_GOOD_SESSION,
+    RETRY_DELAYS,
     STALE_TIMEOUT,
     STATUS_CONNECTED,
     STATUS_CONNECTING,
@@ -99,6 +100,10 @@ class DomyosRowerCoordinator:
         self.last_error: str | None = None
         self.services: list[str] = []
         self._last_logged_error: str | None = None
+        self.last_operation: str | None = None  # BLE step in progress when it last failed
+        self.failures = 0  # consecutive failed sessions (drives the retry back-off)
+        self._op: str | None = None
+        self._session_connected = False
 
         self._listeners: set[Callable[[], None]] = set()
         self._task: asyncio.Task | None = None
@@ -183,6 +188,7 @@ class DomyosRowerCoordinator:
         if self._pending_resistance is None:
             return
         level, self._pending_resistance = self._pending_resistance, None
+        self._step(f"set resistance {level}")
         if self.mode == "proprietary":
             first, second = build_resistance_frames(int(level))
             _LOGGER.debug("%s: setting resistance %s (Domyos)", self.address, level)
@@ -202,6 +208,7 @@ class DomyosRowerCoordinator:
                 )
                 self._push()
                 return
+        self._step("streaming")
         self._commanded_resistance = level
         self._expected_resistance = level
         self._expected_until = time.monotonic() + 3.0
@@ -223,11 +230,16 @@ class DomyosRowerCoordinator:
         for update in list(self._listeners):
             update()
 
+    def _step(self, op: str | None) -> None:
+        """Remember which BLE step is running, so a failure can say where it happened."""
+        self._op = op
+
     @callback
     def _set_connected(self, value: bool) -> None:
         if self.connected != value:
             self.connected = value
             if value:
+                self._session_connected = True
                 self.status = STATUS_CONNECTED
                 self.last_error = None
             else:
@@ -313,27 +325,43 @@ class DomyosRowerCoordinator:
                 continue
 
             started = time.monotonic()
+            self._session_connected = False
+            self._step("connect")
             self._set_status(STATUS_CONNECTING)
             try:
                 await self._session(ble_device)
             except asyncio.CancelledError:
                 raise
             except (BleakError, TimeoutError, OSError) as err:
-                text = f"connection/communication error: {_err_text(err)}"
+                self.last_operation = self._op
+                text = f"{_err_text(err)} (during: {self._op})"
                 self._set_status(STATUS_ERROR, text)
-                self._log_failure(text)
+                self._log_failure(f"connection/communication error: {text}")
             except Exception as err:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error with %s", self.address)
+                self.last_operation = self._op
                 self._set_status(STATUS_ERROR, f"unexpected error: {_err_text(err)}")
+            duration = time.monotonic() - started
+            was_connected = self._session_connected
             self._set_connected(False)
             if self.status != STATUS_ERROR:
                 self._set_status(STATUS_WAITING)
+
+            # A real, held connection resets the back-off (a link lost mid-workout is
+            # retried quickly); repeated failures space the attempts out.
+            if was_connected and duration >= MIN_GOOD_SESSION:
+                self.failures = 0
+            else:
+                self.failures += 1
+            delay = RETRY_DELAYS[min(self.failures, len(RETRY_DELAYS) - 1)]
             _LOGGER.info(
-                "%s: session ended after %.1f s", self.address, time.monotonic() - started
+                "%s: session ended after %.1f s (connected=%s, last step: %s); retrying in %.0f s",
+                self.address, duration, was_connected, self._op, delay,
             )
+            self._push()
 
             with suppress(TimeoutError):
-                await asyncio.wait_for(self._wake_event.wait(), RETRY_DELAY)
+                await asyncio.wait_for(self._wake_event.wait(), delay)
             self._wake_event.clear()
 
     def _on_disconnected(self, _client) -> None:
@@ -347,10 +375,11 @@ class DomyosRowerCoordinator:
             ble_device,
             self.name,
             self._on_disconnected,
-            max_attempts=3,
+            max_attempts=1,  # our own loop retries, with back-off
             ble_device_callback=self._current_ble_device,
         )
         self._reset_session()
+        self._step("read services")
         try:
             services = client.services
             self.services = sorted(s.uuid for s in services)
@@ -448,7 +477,10 @@ class DomyosRowerCoordinator:
         _LOGGER.info(
             "%s: FTMS characteristics: %s",
             self.address,
-            {c.uuid[4:8]: list(c.properties) for c in chars},
+            {
+                c.uuid[4:8]: f"handle {getattr(c, 'handle', '?')} {'/'.join(c.properties)}"
+                for c in chars
+            },
         )
 
         self._ftms_cp = next(
@@ -462,6 +494,7 @@ class DomyosRowerCoordinator:
             if "notify" not in char.properties and "indicate" not in char.properties:
                 continue
             try:
+                self._step(f"subscribe {char.uuid[4:8]} (handle {getattr(char, 'handle', '?')})")
                 await client.start_notify(char, self._make_ftms_handler(char.uuid))
                 subscribed.append(char.uuid[4:8])
             except (BleakError, TimeoutError, OSError) as err:
@@ -476,6 +509,7 @@ class DomyosRowerCoordinator:
         range_char = next((c for c in chars if c.uuid == FTMS_RESISTANCE_RANGE), None)
         if range_char is not None and "read" in range_char.properties:
             try:
+                self._step("read resistance range")
                 raw = bytes(await client.read_gatt_char(range_char))
                 parsed = parse_resistance_range(raw)
                 _LOGGER.info("%s: resistance range raw=%s -> %s", self.address, raw.hex(" "), parsed)
@@ -487,6 +521,9 @@ class DomyosRowerCoordinator:
 
         # Like QZ for DOMYOS-ROW-xxxx: "Start or Resume" lets the console stream its data.
         if self._ftms_cp is not None:
+            self._step(
+                f"write Start/Resume (handle {getattr(self._ftms_cp, 'handle', '?')})"
+            )
             result = await self._ftms_command(
                 client, bytes([FTMS_OP_START_RESUME]), ensure_control=True
             )
@@ -495,6 +532,7 @@ class DomyosRowerCoordinator:
             _LOGGER.warning("%s: no FTMS Control Point, read-only mode", self.address)
 
         self._ftms_stroke_t = time.monotonic()
+        self._step("streaming")
         self._set_connected(True)
         while client.is_connected and self.enabled:
             await self._send_pending_resistance(client)
@@ -541,10 +579,13 @@ class DomyosRowerCoordinator:
 
     async def _run_proprietary(self, client) -> bool:
         """Returns True if the console answered with status packets, False if silent."""
+        self._step("subscribe domyos")
         await client.start_notify(PROP_NOTIFY, self._on_proprietary)
         _LOGGER.info("%s: Domyos protocol, sending init sequence", self.address)
-        for frame, wait_answer in INIT_FRAMES:
+        for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
+            self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
             await self._write(client, frame, wait_answer)
+        self._step("domyos polling")
 
         started = time.monotonic()
         self._last_packet = started

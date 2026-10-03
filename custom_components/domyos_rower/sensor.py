@@ -153,6 +153,8 @@ class DomyosRowerStatusSensor(DomyosRowerEntity, SensorEntity):
         return {
             "protocol": c.mode,
             "last_error": c.last_error,
+            "last_failed_step": c.last_operation,
+            "consecutive_failures": c.failures,
             "services": c.services,
             "resistance_range": list(c.resistance_range),
             "resistance_range_from_rower": c.resistance_range_known,
