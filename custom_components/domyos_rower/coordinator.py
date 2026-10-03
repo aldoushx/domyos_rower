@@ -1,0 +1,588 @@
+"""Keeps a BLE connection to the rower through Home Assistant's Bluetooth stack.
+
+Because it uses HA's Bluetooth manager, the connection transparently goes
+through an ESPHome Bluetooth proxy (which must run with `active: true`).
+
+Two protocols are supported, picked from the GATT services (same rule as QZ):
+* Domyos proprietary service present -> proprietary protocol;
+* otherwise FTMS: subscribe to every notify/indicate characteristic of the FTMS
+  service, then write "Start/Resume" to the Control Point (what QZ does for
+  DOMYOS-ROW-xxxx rowers), which is what makes the console stream its data.
+"""
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import replace
+import logging
+import time
+
+from bleak.exc import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+
+from homeassistant.components import bluetooth
+from homeassistant.components.bluetooth import (
+    BluetoothCallbackMatcher,
+    BluetoothChange,
+    BluetoothScanningMode,
+    BluetoothServiceInfoBleak,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+
+from .const import (
+    ACK_TIMEOUT,
+    DOMAIN,
+    FTMS_CMD_TIMEOUT,
+    FTMS_STROKE_IDLE,
+    POLL_INTERVAL,
+    PROP_NO_DATA_TIMEOUT,
+    RETRY_DELAY,
+    STALE_TIMEOUT,
+    STATUS_CONNECTED,
+    STATUS_CONNECTING,
+    STATUS_DISABLED,
+    STATUS_ERROR,
+    STATUS_WAITING,
+)
+from .protocol import (
+    FTMS_CONTROL_POINT,
+    FTMS_OP_REQUEST_CONTROL,
+    FTMS_OP_START_RESUME,
+    FTMS_RESISTANCE_RANGE,
+    FTMS_RESULTS,
+    FTMS_SERVICE,
+    INIT_FRAMES,
+    NOOP,
+    PROP_NOTIFY,
+    PROP_SERVICE,
+    PROP_WRITE,
+    RESISTANCE_MAX,
+    RESISTANCE_MIN,
+    ROWER_DATA,
+    RowerData,
+    build_ftms_set_resistance,
+    build_resistance_frames,
+    parse_ftms_response,
+    parse_ftms_rower_data,
+    parse_proprietary,
+    parse_resistance_range,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _err_text(err: BaseException) -> str:
+    return f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
+
+
+class DomyosRowerCoordinator:
+    """Push-style coordinator: BLE notifications -> listeners."""
+
+    def __init__(
+        self, hass: HomeAssistant, entry: ConfigEntry, address: str, name: str
+    ) -> None:
+        self.hass = hass
+        self.entry = entry
+        self.address = address
+        self.name = name
+
+        self.data = RowerData()
+        self.connected = False
+        self.enabled = True  # lets the user free the rower for a phone/QZ
+        self.mode: str | None = None  # "proprietary" or "ftms"
+
+        # diagnostics
+        self.status = STATUS_WAITING
+        self.last_error: str | None = None
+        self.services: list[str] = []
+        self._last_logged_error: str | None = None
+
+        self._listeners: set[Callable[[], None]] = set()
+        self._task: asyncio.Task | None = None
+        self._cancel_adv: Callable[[], None] | None = None
+        self._advert_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
+        self._answer_event = asyncio.Event()
+        self._last_packet = 0.0
+
+        # Domyos proprietary state
+        self._distance_m = 0.0
+        self._last_t: float | None = None
+        self._last_strokes: int | None = None
+        self._got_packet = False
+
+        # FTMS state
+        self._ftms_cp = None  # Control Point characteristic object
+        self._cp_event = asyncio.Event()
+        self._cp_expected: int | None = None
+        self._cp_response: tuple[int, int] | None = None
+        self._ftms_strokes: int | None = None
+        self._ftms_stroke_t = 0.0
+
+        # resistance control
+        self.resistance_range: tuple[float, float, float] = (
+            float(RESISTANCE_MIN),
+            float(RESISTANCE_MAX),
+            1.0,
+        )
+        self.resistance_range_known = False
+        self._pending_resistance: float | None = None
+        self._expected_resistance: float | None = None
+        self._expected_until = 0.0
+        self._commanded_resistance: float | None = None
+
+    # ------------------------------------------------------------ resistance
+    @property
+    def can_set_resistance(self) -> bool:
+        if not self.connected:
+            return False
+        return self.mode == "proprietary" or (
+            self.mode == "ftms" and self._ftms_cp is not None
+        )
+
+    @property
+    def resistance_target(self) -> float | None:
+        """What the number entity shows: the request until the console confirms it."""
+        if self._pending_resistance is not None:
+            return self._pending_resistance
+        if self._expected_resistance is not None:
+            return self._expected_resistance
+        if self.data.resistance is not None:
+            return self.data.resistance
+        return self._commanded_resistance
+
+    @callback
+    def async_set_resistance(self, level: float) -> None:
+        """Queue a resistance change; the session loop sends it (writes stay serialized)."""
+        if not self.can_set_resistance:
+            raise HomeAssistantError(
+                "Resistance can only be changed while the rower is connected."
+            )
+        lo, hi, step = self.resistance_range
+        level = max(lo, min(hi, float(level)))
+        if self.mode == "proprietary":
+            level = int(round(level))
+        elif step > 0:
+            level = round(lo + round((level - lo) / step) * step, 1)
+        self._pending_resistance = level
+        self._push()
+
+    def _check_expected(self, now: float) -> None:
+        if self._expected_resistance is None:
+            return
+        res = self.data.resistance
+        if (res is not None and abs(res - self._expected_resistance) < 0.5) or (
+            now > self._expected_until
+        ):
+            self._expected_resistance = None
+
+    async def _send_pending_resistance(self, client) -> None:
+        if self._pending_resistance is None:
+            return
+        level, self._pending_resistance = self._pending_resistance, None
+        if self.mode == "proprietary":
+            first, second = build_resistance_frames(int(level))
+            _LOGGER.debug("%s: setting resistance %s (Domyos)", self.address, level)
+            await self._write(client, first, False)
+            await self._write(client, second, False)
+        else:
+            payload = build_ftms_set_resistance(level)
+            result = await self._ftms_command(client, payload, ensure_control=True)
+            _LOGGER.debug(
+                "%s: setting resistance %s (FTMS %s) -> %s",
+                self.address, level, payload.hex(" "), self._result_text(result),
+            )
+            if result not in (None, 0x01):
+                _LOGGER.warning(
+                    "%s: rower refused resistance %s: %s",
+                    self.address, level, self._result_text(result),
+                )
+                self._push()
+                return
+        self._commanded_resistance = level
+        self._expected_resistance = level
+        self._expected_until = time.monotonic() + 3.0
+        self._push()
+
+    # ------------------------------------------------------------ listeners
+    @callback
+    def async_add_listener(self, update: Callable[[], None]) -> Callable[[], None]:
+        self._listeners.add(update)
+
+        @callback
+        def remove() -> None:
+            self._listeners.discard(update)
+
+        return remove
+
+    @callback
+    def _push(self) -> None:
+        for update in list(self._listeners):
+            update()
+
+    @callback
+    def _set_connected(self, value: bool) -> None:
+        if self.connected != value:
+            self.connected = value
+            if value:
+                self.status = STATUS_CONNECTED
+                self.last_error = None
+            else:
+                self.mode = None
+                self._ftms_cp = None
+            self._push()
+
+    @callback
+    def _set_status(self, status: str, error: str | None = None) -> None:
+        changed = status != self.status or (error is not None and error != self.last_error)
+        self.status = status
+        if error is not None:
+            self.last_error = error
+        if changed:
+            self._push()
+
+    @callback
+    def async_set_enabled(self, value: bool) -> None:
+        self.enabled = value
+        if not value:
+            self._set_status(STATUS_DISABLED)
+        self._wake_event.set()
+        self._advert_event.set()
+        self._push()
+
+    # ------------------------------------------------------------ lifecycle
+    @callback
+    def async_start(self) -> None:
+        self._cancel_adv = bluetooth.async_register_callback(
+            self.hass,
+            self._async_on_advert,
+            BluetoothCallbackMatcher(address=self.address, connectable=True),
+            BluetoothScanningMode.ACTIVE,
+        )
+        self._task = self.entry.async_create_background_task(
+            self.hass, self._run(), f"{DOMAIN}_{self.address}"
+        )
+
+    async def async_stop(self) -> None:
+        if self._cancel_adv:
+            self._cancel_adv()
+            self._cancel_adv = None
+        if self._task:
+            self._task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._task
+            self._task = None
+
+    @callback
+    def _async_on_advert(
+        self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange
+    ) -> None:
+        self._advert_event.set()
+
+    def _current_ble_device(self):
+        return bluetooth.async_ble_device_from_address(
+            self.hass, self.address, connectable=True
+        )
+
+    def _log_failure(self, text: str) -> None:
+        """WARNING the first time an error shows up, DEBUG while it repeats."""
+        if text != self._last_logged_error:
+            self._last_logged_error = text
+            _LOGGER.warning("%s: %s", self.address, text)
+        else:
+            _LOGGER.debug("%s: %s (repeated)", self.address, text)
+
+    # ------------------------------------------------------------ main loop
+    async def _run(self) -> None:
+        while True:
+            if not self.enabled:
+                self._set_status(STATUS_DISABLED)
+                self._wake_event.clear()
+                await self._wake_event.wait()
+                continue
+
+            ble_device = self._current_ble_device()
+            if ble_device is None:
+                # The rower sleeps (no advertising) until someone pulls the handle.
+                self._set_status(STATUS_WAITING)
+                self._advert_event.clear()
+                await self._advert_event.wait()
+                continue
+
+            started = time.monotonic()
+            self._set_status(STATUS_CONNECTING)
+            try:
+                await self._session(ble_device)
+            except asyncio.CancelledError:
+                raise
+            except (BleakError, TimeoutError, OSError) as err:
+                text = f"connection/communication error: {_err_text(err)}"
+                self._set_status(STATUS_ERROR, text)
+                self._log_failure(text)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.exception("Unexpected error with %s", self.address)
+                self._set_status(STATUS_ERROR, f"unexpected error: {_err_text(err)}")
+            self._set_connected(False)
+            if self.status != STATUS_ERROR:
+                self._set_status(STATUS_WAITING)
+            _LOGGER.info(
+                "%s: session ended after %.1f s", self.address, time.monotonic() - started
+            )
+
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._wake_event.wait(), RETRY_DELAY)
+            self._wake_event.clear()
+
+    def _on_disconnected(self, _client) -> None:
+        _LOGGER.info("%s: disconnected", self.address)
+        self._set_connected(False)
+
+    async def _session(self, ble_device) -> None:
+        _LOGGER.info("%s: connecting (via %s)", self.address, getattr(ble_device, "details", "?"))
+        client = await establish_connection(
+            BleakClientWithServiceCache,
+            ble_device,
+            self.name,
+            self._on_disconnected,
+            max_attempts=3,
+            ble_device_callback=self._current_ble_device,
+        )
+        self._reset_session()
+        try:
+            services = client.services
+            self.services = sorted(s.uuid for s in services)
+            _LOGGER.info("%s: connected, services: %s", self.address, self.services)
+            has_prop = services.get_service(PROP_SERVICE) is not None
+            has_ftms = services.get_service(FTMS_SERVICE) is not None
+
+            if has_prop:
+                self.mode = "proprietary"
+                answered = await self._run_proprietary(client)
+                if not answered and has_ftms and client.is_connected and self.enabled:
+                    _LOGGER.warning(
+                        "%s: Domyos protocol got no answer, falling back to FTMS", self.address
+                    )
+                    self._set_connected(False)
+                    self.mode = "ftms"
+                    await self._run_ftms(client)
+            elif has_ftms:
+                self.mode = "ftms"
+                await self._run_ftms(client)
+            else:
+                text = f"no Domyos/FTMS service, found: {self.services}"
+                self._set_status(STATUS_ERROR, text)
+                self._log_failure(text)
+        finally:
+            with suppress(BleakError, TimeoutError, OSError):
+                await client.disconnect()
+
+    def _reset_session(self) -> None:
+        self.data = RowerData()
+        self._distance_m = 0.0
+        self._last_t = None
+        self._last_strokes = None
+        self._got_packet = False
+        self._last_packet = time.monotonic()
+        self._pending_resistance = None
+        self._expected_resistance = None
+        self._commanded_resistance = None
+        self._ftms_cp = None
+        self._ftms_strokes = None
+        self._ftms_stroke_t = time.monotonic()
+        self._last_logged_error = None
+
+    # ------------------------------------------------------------ FTMS
+    @staticmethod
+    def _result_text(result: int | None) -> str:
+        if result is None:
+            return "no indication from the rower"
+        return FTMS_RESULTS.get(result, f"result {result:#04x}")
+
+    async def _ftms_command(self, client, payload: bytes, ensure_control: bool = False) -> int | None:
+        """Write to the Control Point and return the FTMS result code (None = no answer)."""
+
+        async def once(data: bytes) -> int | None:
+            self._cp_expected = data[0]
+            self._cp_response = None
+            self._cp_event.clear()
+            await client.write_gatt_char(self._ftms_cp, data, response=True)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._cp_event.wait(), FTMS_CMD_TIMEOUT)
+            return self._cp_response[1] if self._cp_response else None
+
+        result = await once(payload)
+        if ensure_control and result == 0x05:  # control not permitted -> ask for control
+            _LOGGER.debug("%s: requesting control then retrying", self.address)
+            await once(bytes([FTMS_OP_REQUEST_CONTROL]))
+            result = await once(payload)
+        return result
+
+    def _on_ftms_cp(self, payload: bytes) -> None:
+        parsed = parse_ftms_response(payload)
+        _LOGGER.debug("%s: control point indication %s", self.address, payload.hex(" "))
+        if parsed and parsed[0] == self._cp_expected:
+            self._cp_response = parsed
+            self._cp_event.set()
+
+    def _on_ftms_other(self, uuid: str, payload: bytes) -> None:
+        _LOGGER.debug("%s: %s -> %s", self.address, uuid, payload.hex(" "))
+
+    def _make_ftms_handler(self, uuid: str):
+        def handler(_char, payload: bytearray) -> None:
+            data = bytes(payload)
+            if uuid == ROWER_DATA:
+                self._on_ftms_data(data)
+            elif uuid == FTMS_CONTROL_POINT:
+                self._on_ftms_cp(data)
+            else:
+                self._on_ftms_other(uuid, data)
+
+        return handler
+
+    async def _run_ftms(self, client) -> None:
+        service = client.services.get_service(FTMS_SERVICE)
+        chars = list(service.characteristics)
+        _LOGGER.info(
+            "%s: FTMS characteristics: %s",
+            self.address,
+            {c.uuid[4:8]: list(c.properties) for c in chars},
+        )
+
+        self._ftms_cp = next(
+            (c for c in chars if c.uuid == FTMS_CONTROL_POINT and "write" in c.properties),
+            None,
+        )
+
+        # Like QZ: subscribe to every notify/indicate characteristic of the FTMS service.
+        subscribed = []
+        for char in chars:
+            if "notify" not in char.properties and "indicate" not in char.properties:
+                continue
+            try:
+                await client.start_notify(char, self._make_ftms_handler(char.uuid))
+                subscribed.append(char.uuid[4:8])
+            except (BleakError, TimeoutError, OSError) as err:
+                if char.uuid == ROWER_DATA:
+                    raise
+                _LOGGER.warning(
+                    "%s: could not subscribe to %s: %s", self.address, char.uuid[4:8], _err_text(err)
+                )
+        _LOGGER.info("%s: subscribed to %s", self.address, subscribed)
+
+        # Optional: the machine's resistance range, so the slider has the right bounds.
+        range_char = next((c for c in chars if c.uuid == FTMS_RESISTANCE_RANGE), None)
+        if range_char is not None and "read" in range_char.properties:
+            try:
+                raw = bytes(await client.read_gatt_char(range_char))
+                parsed = parse_resistance_range(raw)
+                _LOGGER.info("%s: resistance range raw=%s -> %s", self.address, raw.hex(" "), parsed)
+                if parsed:
+                    self.resistance_range = parsed
+                    self.resistance_range_known = True
+            except (BleakError, TimeoutError, OSError) as err:
+                _LOGGER.debug("%s: cannot read resistance range: %s", self.address, _err_text(err))
+
+        # Like QZ for DOMYOS-ROW-xxxx: "Start or Resume" lets the console stream its data.
+        if self._ftms_cp is not None:
+            result = await self._ftms_command(
+                client, bytes([FTMS_OP_START_RESUME]), ensure_control=True
+            )
+            _LOGGER.info("%s: Start/Resume -> %s", self.address, self._result_text(result))
+        else:
+            _LOGGER.warning("%s: no FTMS Control Point, read-only mode", self.address)
+
+        self._ftms_stroke_t = time.monotonic()
+        self._set_connected(True)
+        while client.is_connected and self.enabled:
+            await self._send_pending_resistance(client)
+            self._ftms_idle_check()
+            await asyncio.sleep(POLL_INTERVAL)
+
+    def _ftms_idle_check(self) -> None:
+        """No new stroke for a few seconds: the rower isn't moving (same rule as QZ)."""
+        now = time.monotonic()
+        d = self.data
+        if now - self._ftms_stroke_t > FTMS_STROKE_IDLE and (
+            d.cadence or d.speed_kmh or d.power_w
+        ):
+            self.data = replace(
+                d,
+                cadence=0.0 if d.cadence is not None else None,
+                speed_kmh=0.0 if d.speed_kmh is not None else None,
+                power_w=0 if d.power_w is not None else None,
+                pace_s500=None,
+            )
+            self._push()
+
+    def _on_ftms_data(self, payload: bytes) -> None:
+        parsed = parse_ftms_rower_data(payload)
+        if parsed is None:
+            return
+        now = time.monotonic()
+        if parsed.strokes is not None and parsed.strokes != self._ftms_strokes:
+            self._ftms_strokes = parsed.strokes
+            self._ftms_stroke_t = now
+        self.data = self.data.merged(parsed)
+        self._last_packet = now
+        self._check_expected(now)
+        self._ftms_idle_check()
+        self._push()
+
+    # ------------------------------------------------------------ Domyos proprietary
+    async def _write(self, client, data: bytes, wait_answer: bool) -> None:
+        self._answer_event.clear()
+        await client.write_gatt_char(PROP_WRITE, data, response=True)
+        if wait_answer:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._answer_event.wait(), ACK_TIMEOUT)
+
+    async def _run_proprietary(self, client) -> bool:
+        """Returns True if the console answered with status packets, False if silent."""
+        await client.start_notify(PROP_NOTIFY, self._on_proprietary)
+        _LOGGER.info("%s: Domyos protocol, sending init sequence", self.address)
+        for frame, wait_answer in INIT_FRAMES:
+            await self._write(client, frame, wait_answer)
+
+        started = time.monotonic()
+        self._last_packet = started
+        while client.is_connected and self.enabled:
+            await self._write(client, NOOP, False)
+            await self._send_pending_resistance(client)
+            await asyncio.sleep(POLL_INTERVAL)
+            now = time.monotonic()
+            if not self._got_packet and now - started > PROP_NO_DATA_TIMEOUT:
+                _LOGGER.warning("%s: no valid Domyos status packet after init", self.address)
+                return False
+            if self._got_packet and now - self._last_packet > STALE_TIMEOUT:
+                _LOGGER.info("%s: no status packet for %s s, closing", self.address, STALE_TIMEOUT)
+                return True
+        return self._got_packet
+
+    def _on_proprietary(self, _char, payload: bytearray) -> None:
+        packet = bytes(payload)
+        self._answer_event.set()
+        parsed = parse_proprietary(packet)
+        if parsed is None:
+            _LOGGER.debug(
+                "%s: ignored packet (%d bytes): %s", self.address, len(packet), packet.hex(" ")
+            )
+            return
+
+        now = time.monotonic()
+        # New workout on the console (stroke counter went back down): restart distance.
+        if self._last_strokes is not None and parsed.strokes < self._last_strokes:
+            self._distance_m = 0.0
+        self._last_strokes = parsed.strokes
+        if self._last_t is not None and parsed.speed_kmh:
+            self._distance_m += parsed.speed_kmh / 3.6 * (now - self._last_t)
+        self._last_t = now
+        self._last_packet = now
+        self._got_packet = True
+
+        self.data = replace(parsed, distance_m=round(self._distance_m, 1))
+        self._check_expected(now)
+        self._set_connected(True)
+        self._push()

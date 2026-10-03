@@ -1,0 +1,75 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Rameur Domyos",
+        "description": "Tire la poignée pour réveiller le rameur et activer son Bluetooth, puis sélectionne-le.",
+        "data": {
+          "address": "Appareil"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Veux-tu configurer {name} ?"
+      }
+    },
+    "abort": {
+      "no_devices_found": "Aucun rameur Domyos trouvé. Réveille-le (tire la poignée) et vérifie qu'un adaptateur ou proxy Bluetooth est à portée.",
+      "already_configured": "Ce rameur est déjà configuré."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "cadence": {
+        "name": "Cadence de coups"
+      },
+      "strokes": {
+        "name": "Coups"
+      },
+      "speed": {
+        "name": "Vitesse"
+      },
+      "pace": {
+        "name": "Allure"
+      },
+      "distance": {
+        "name": "Distance"
+      },
+      "calories": {
+        "name": "Calories"
+      },
+      "power": {
+        "name": "Puissance"
+      },
+      "resistance": {
+        "name": "Niveau de résistance"
+      },
+      "heart_rate": {
+        "name": "Fréquence cardiaque"
+      },
+      "elapsed_time": {
+        "name": "Temps écoulé"
+      },
+      "status": {
+        "name": "État",
+        "state": {
+          "disabled": "Désactivé",
+          "waiting": "En attente du rameur",
+          "connecting": "Connexion",
+          "connected": "Connecté",
+          "error": "Erreur"
+        }
+      }
+    },
+    "switch": {
+      "connection": {
+        "name": "Connexion Bluetooth"
+      }
+    },
+    "number": {
+      "resistance_target": {
+        "name": "Résistance (consigne)"
+      }
+    }
+  }
+}

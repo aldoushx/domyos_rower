@@ -1,0 +1,75 @@
+{
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Domyos Rower",
+        "description": "Pull the handle to wake the rower and enable its Bluetooth, then pick it.",
+        "data": {
+          "address": "Device"
+        }
+      },
+      "bluetooth_confirm": {
+        "description": "Do you want to set up {name}?"
+      }
+    },
+    "abort": {
+      "no_devices_found": "No Domyos rower found. Wake it up (pull the handle) and make sure a Bluetooth adapter or proxy is in range.",
+      "already_configured": "This rower is already configured."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "cadence": {
+        "name": "Stroke rate"
+      },
+      "strokes": {
+        "name": "Strokes"
+      },
+      "speed": {
+        "name": "Speed"
+      },
+      "pace": {
+        "name": "Pace"
+      },
+      "distance": {
+        "name": "Distance"
+      },
+      "calories": {
+        "name": "Calories"
+      },
+      "power": {
+        "name": "Power"
+      },
+      "resistance": {
+        "name": "Resistance level"
+      },
+      "heart_rate": {
+        "name": "Heart rate"
+      },
+      "elapsed_time": {
+        "name": "Elapsed time"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "disabled": "Disabled",
+          "waiting": "Waiting for the rower",
+          "connecting": "Connecting",
+          "connected": "Connected",
+          "error": "Error"
+        }
+      }
+    },
+    "switch": {
+      "connection": {
+        "name": "Bluetooth connection"
+      }
+    },
+    "number": {
+      "resistance_target": {
+        "name": "Resistance target"
+      }
+    }
+  }
+}
