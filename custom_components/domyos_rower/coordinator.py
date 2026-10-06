@@ -16,12 +16,13 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 import logging
+import os
 import time
 
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
-from homeassistant.components import bluetooth
+from homeassistant.components import bluetooth, persistent_notification
 from homeassistant.components.bluetooth import (
     BluetoothCallbackMatcher,
     BluetoothChange,
@@ -31,19 +32,30 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ACK_TIMEOUT,
+    CONF_GPX_LAT,
+    CONF_GPX_LON,
+    CONF_OUTPUT_DIR,
+    CONF_SPORT_TYPE,
+    CONF_STRAVA,
+    DEFAULT_SPORT_TYPE,
     DISPLAY_INTERVAL,
     DISTANCE_SCALE_MAX,
     DISTANCE_SCALE_MIN,
     DOMAIN,
+    EVENT_SESSION_SAVED,
     FTMS_CMD_TIMEOUT,
     FTMS_STROKE_IDLE,
     POLL_INTERVAL,
     PROP_NO_DATA_TIMEOUT,
     MIN_GOOD_SESSION,
     RETRY_DELAYS,
+    SAMPLE_INTERVAL,
     STALE_TIMEOUT,
     STATUS_CONNECTED,
     STATUS_CONNECTING,
@@ -76,7 +88,27 @@ from .protocol import (
     parse_resistance_range,
 )
 
+from .session import SessionRecorder, build_gpx, build_tcx, file_stem
+from .strava import StravaClient, StravaError
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def default_output_dir(hass: HomeAssistant) -> str:
+    """/media/domyos_rower when a writable /media exists (HA OS, Supervised), else <config>/domyos_rower."""
+    if os.path.isdir("/media") and os.access("/media", os.W_OK):
+        return "/media/domyos_rower"
+    return hass.config.path("domyos_rower")
+
+
+def _write_files(folder: str, stem: str, tcx: str, gpx: str) -> dict[str, str]:
+    os.makedirs(folder, exist_ok=True)
+    paths = {"tcx": os.path.join(folder, f"{stem}.tcx"), "gpx": os.path.join(folder, f"{stem}.gpx")}
+    with open(paths["tcx"], "w", encoding="utf-8") as fh:
+        fh.write(tcx)
+    with open(paths["gpx"], "w", encoding="utf-8") as fh:
+        fh.write(gpx)
+    return paths
 
 
 def _err_text(err: BaseException) -> str:
@@ -130,6 +162,16 @@ class DomyosRowerCoordinator:
         self._cp_response: tuple[int, int] | None = None
         self._ftms_strokes: int | None = None
         self._ftms_stroke_t = 0.0
+
+        # session recording (switch) and export (files at the end, Strava on demand)
+        self.recorder: SessionRecorder | None = None
+        self.recording = False
+        self.last_session: dict | None = None
+        self.strava_busy = False
+        self._rec_mono = 0.0
+        self._last_sample_mono = float("-inf")
+        self._strava_obj: StravaClient | None = None
+        self._store: Store = Store(hass, 1, f"{DOMAIN}_session_{entry.entry_id}")
 
         # distance calibration (multiplier applied to distance and what derives from it)
         self.distance_scale = 1.0
@@ -211,6 +253,7 @@ class DomyosRowerCoordinator:
         """Workout timer: counts while strokes keep coming (rower sends no elapsed time)."""
         dt = min(max(now - self._tick_t, 0.0), 1.0)
         self._tick_t = now
+        self._sample(now)
         if self._rower_sends_elapsed:
             return
         if now - self._last_stroke_change <= FTMS_STROKE_IDLE:
@@ -219,6 +262,219 @@ class DomyosRowerCoordinator:
         if self.data.elapsed_s != elapsed:
             self.data = replace(self.data, elapsed_s=elapsed)
             self._push()
+
+    # ------------------------------------------------------------ session recording
+    def _opt(self, key: str, default=None):
+        value = self.entry.options.get(key)
+        return default if value in (None, "") else value
+
+    @property
+    def has_session(self) -> bool:
+        return self.recorder is not None and len(self.recorder.samples) >= 2
+
+    @property
+    def strava_configured(self) -> bool:
+        return bool(self.entry.data.get(CONF_STRAVA, {}).get("refresh_token"))
+
+    async def async_load(self) -> None:
+        """Restore the last recorded session (so the buttons keep working after a restart)."""
+        data = await self._store.async_load()
+        if data and data.get("session"):
+            self.recorder = SessionRecorder.from_dict(data["session"])
+            self.last_session = data.get("info")
+
+    def _store_data(self) -> dict:
+        return {
+            "session": self.recorder.to_dict() if self.recorder else None,
+            "info": self.last_session,
+        }
+
+    @callback
+    def _sample(self, now: float) -> None:
+        if not (self.recording and self.connected and self.recorder):
+            return
+        if now - self._last_sample_mono < SAMPLE_INTERVAL:
+            return
+        self._last_sample_mono = now
+        d = self.view
+        self.recorder.add(
+            now - self._rec_mono,
+            distance_m=d.distance_m,
+            speed_kmh=d.speed_kmh,
+            cadence=d.cadence,
+            power_w=d.power_w,
+            heart_rate=d.heart_rate,
+            calories=d.calories,
+            resistance=d.resistance,
+            strokes=d.strokes,
+        )
+        self._store.async_delay_save(self._store_data, 30)
+        self._push()
+
+    async def async_start_recording(self) -> None:
+        if self.recording:
+            return
+        self.recorder = SessionRecorder(dt_util.utcnow())
+        self._rec_mono = time.monotonic()
+        self._last_sample_mono = float("-inf")
+        self._active_time = 0.0  # the workout timer starts with the recording
+        self.recording = True
+        _LOGGER.info("%s: session recording started", self.address)
+        self._push()
+
+    async def async_stop_recording(self) -> None:
+        """Stop and, like QZ would at the end of a workout, write the TCX and GPX files."""
+        if not self.recording:
+            return
+        self.recording = False
+        self._push()
+        if not self.has_session:
+            _LOGGER.info("%s: recording stopped with no data, nothing exported", self.address)
+            persistent_notification.async_create(
+                self.hass,
+                "La séance enregistrée est vide (le rameur n'était pas connecté ou il n'y a eu "
+                "aucune donnée), aucun fichier n'a été créé.",
+                title="Domyos Rower",
+                notification_id=f"{DOMAIN}_{self.address}_empty",
+            )
+            return
+        try:
+            await self.async_generate_files()
+        except HomeAssistantError as err:
+            persistent_notification.async_create(
+                self.hass,
+                f"Impossible de créer les fichiers de la séance : {err}. "
+                "La séance reste en mémoire : corrige le dossier dans les options puis utilise "
+                "le bouton « Générer les fichiers ».",
+                title="Domyos Rower",
+                notification_id=f"{DOMAIN}_{self.address}_files",
+            )
+
+    def _session_texts(self) -> tuple[str, str, str]:
+        assert self.recorder is not None
+        start_local = dt_util.as_local(self.recorder.start)
+        name = f"Rameur Domyos – {start_local:%d/%m/%Y %H:%M}"
+        notes = "Séance enregistrée avec Home Assistant."
+        if self.power_is_calculated:
+            notes += " Puissance estimée à partir de l'allure (formule du Concept2)."
+        if self.distance_scale != 1.0:
+            notes += f" Distance étalonnée (x{self.distance_scale:g})."
+        return name, notes, file_stem(start_local)
+
+    async def async_generate_files(self) -> dict:
+        """Write <stem>.tcx and <stem>.gpx in the export folder. Never uploads anything."""
+        if not self.has_session:
+            raise HomeAssistantError("Aucune séance enregistrée à exporter.")
+        if self.recording:
+            raise HomeAssistantError("Arrête l'enregistrement avant de générer les fichiers.")
+        rec = self.recorder
+        assert rec is not None
+        name, notes, stem = self._session_texts()
+        folder = self._opt(CONF_OUTPUT_DIR) or await self.hass.async_add_executor_job(
+            default_output_dir, self.hass
+        )
+        lat = float(self._opt(CONF_GPX_LAT, self.hass.config.latitude))
+        lon = float(self._opt(CONF_GPX_LON, self.hass.config.longitude))
+        tcx = build_tcx(rec, notes)
+        gpx = build_gpx(rec, name, lat, lon)
+        try:
+            paths = await self.hass.async_add_executor_job(_write_files, folder, stem, tcx, gpx)
+        except OSError as err:
+            raise HomeAssistantError(f"écriture impossible dans « {folder} » ({err})") from err
+
+        summary = rec.summary()
+        previous_strava = (
+            (self.last_session or {}).get("strava")
+            if (self.last_session or {}).get("start") == rec.start.isoformat()
+            else None
+        )
+        self.last_session = {
+            "start": rec.start.isoformat(),
+            "name": name,
+            "folder": folder,
+            "files": paths,
+            "summary": summary,
+            "strava": previous_strava,
+        }
+        await self._store.async_save(self._store_data())
+        self.hass.bus.async_fire(
+            EVENT_SESSION_SAVED,
+            {
+                "entry_id": self.entry.entry_id,
+                "address": self.address,
+                "device": self.name,
+                "start": rec.start.isoformat(),
+                "folder": folder,
+                "tcx": paths["tcx"],
+                "gpx": paths["gpx"],
+                **{k: summary.get(k) for k in ("duration_s", "distance_m", "calories", "strokes")},
+            },
+        )
+        _LOGGER.info("%s: session files written: %s", self.address, paths)
+        self._push()
+        return self.last_session
+
+    def _strava_client(self) -> StravaClient:
+        if self._strava_obj is None:
+            conf = self.entry.data[CONF_STRAVA]
+
+            async def save(tokens: dict) -> None:
+                self.hass.config_entries.async_update_entry(
+                    self.entry,
+                    data={**self.entry.data, CONF_STRAVA: {**self.entry.data[CONF_STRAVA], **tokens}},
+                )
+
+            self._strava_obj = StravaClient(
+                async_get_clientsession(self.hass),
+                conf["client_id"],
+                conf["client_secret"],
+                tokens=conf,
+                token_saved=save,
+            )
+        return self._strava_obj
+
+    async def async_upload_strava(self) -> dict:
+        """Manual only: send the last recorded session to Strava (TCX)."""
+        if not self.strava_configured:
+            raise HomeAssistantError("Strava n'est pas configuré pour cet appareil.")
+        if not self.has_session or self.recording:
+            raise HomeAssistantError("Aucune séance terminée à envoyer.")
+        if self.strava_busy:
+            raise HomeAssistantError("Un envoi vers Strava est déjà en cours.")
+        rec = self.recorder
+        assert rec is not None
+        name, notes, stem = self._session_texts()
+        info = self.last_session or {}
+        self.strava_busy = True
+        self._push()
+        try:
+            result = await self._strava_client().upload_activity(
+                build_tcx(rec, notes).encode("utf-8"),
+                f"{stem}.tcx",
+                name=name,
+                description=notes,
+                sport_type=self._opt(CONF_SPORT_TYPE, DEFAULT_SPORT_TYPE),
+                external_id=stem,
+            )
+        except StravaError as err:
+            info["strava"] = {"status": "error", "error": str(err)}
+            self.last_session = info
+            persistent_notification.async_create(
+                self.hass,
+                f"L'envoi vers Strava a échoué : {err}",
+                title="Domyos Rower",
+                notification_id=f"{DOMAIN}_{self.address}_strava",
+            )
+            raise HomeAssistantError(f"Envoi Strava impossible : {err}") from err
+        finally:
+            self.strava_busy = False
+            self._push()
+        info["strava"] = {"status": "uploaded", "uploaded_at": dt_util.utcnow().isoformat(), **result}
+        self.last_session = info
+        await self._store.async_save(self._store_data())
+        persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{self.address}_strava")
+        self._push()
+        return result
 
     # ------------------------------------------------------------ resistance
     @property

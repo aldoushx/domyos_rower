@@ -11,11 +11,39 @@
       },
       "bluetooth_confirm": {
         "description": "Do you want to set up {name}?"
+      },
+      "strava_ask": {
+        "title": "Strava upload (optional)",
+        "description": "TCX and GPX files are always created when you stop recording. Do you also want a button to send a session to Strava? (Nothing is ever uploaded automatically.)",
+        "data": {
+          "setup_strava": "Set up the Strava upload"
+        }
+      },
+      "strava_app": {
+        "title": "Strava application",
+        "description": "1. Open https://www.strava.com/settings/api and create your API application (any name/site).\n2. Set **localhost** as the \"Authorization Callback Domain\".\n3. Paste the **Client ID** (a number) and the **Client Secret** here.",
+        "data": {
+          "client_id": "Client ID",
+          "client_secret": "Client secret"
+        }
+      },
+      "strava_code": {
+        "title": "Authorise access to Strava",
+        "description": "1. Open this link and click \"Authorize\": {url}\n2. Your browser will show an error page (localhost): that is expected.\n3. Copy the **full address** of that page (or just the value after `code=`) and paste it below.",
+        "data": {
+          "code": "Address or code"
+        }
       }
     },
     "abort": {
       "no_devices_found": "No Domyos rower found. Wake it up (pull the handle) and make sure a Bluetooth adapter or proxy is in range.",
       "already_configured": "This rower is already configured."
+    },
+    "error": {
+      "invalid_client_id": "The client ID must be a number.",
+      "invalid_client_secret": "The client secret is required.",
+      "strava_auth_failed": "Strava refused this code. Authorise again (a code works once and expires quickly).",
+      "strava_cannot_connect": "Cannot reach Strava."
     }
   },
   "entity": {
@@ -62,11 +90,17 @@
       },
       "pace_mmss": {
         "name": "Pace (mm:ss/500 m)"
+      },
+      "last_session": {
+        "name": "Last session"
       }
     },
     "switch": {
       "connection": {
         "name": "Bluetooth connection"
+      },
+      "recording": {
+        "name": "Session recording"
       }
     },
     "number": {
@@ -76,6 +110,31 @@
       "distance_scale": {
         "name": "Distance calibration (multiplier)"
       }
+    },
+    "button": {
+      "generate_files": {
+        "name": "Generate files (TCX + GPX)"
+      },
+      "upload_strava": {
+        "name": "Send last session to Strava"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Session export",
+        "description": "Folder where the TCX and GPX files are written. GPX is a GPS format: an indoor session has no position, so every point uses the coordinates below (your Home Assistant home by default).",
+        "data": {
+          "output_dir": "Files folder",
+          "gpx_latitude": "GPX latitude",
+          "gpx_longitude": "GPX longitude",
+          "sport_type": "Strava activity type"
+        }
+      }
+    },
+    "error": {
+      "cannot_write": "Cannot write to this folder."
     }
   }
 }

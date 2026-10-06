@@ -23,3 +23,15 @@ STATUSES = [STATUS_DISABLED, STATUS_WAITING, STATUS_CONNECTING, STATUS_CONNECTED
 DISPLAY_INTERVAL = 1.0  # Domyos mode: console screen refreshed once per second (like QZ)
 DISTANCE_SCALE_MIN = 0.5
 DISTANCE_SCALE_MAX = 2.0
+
+# --- session recording / export
+SAMPLE_INTERVAL = 1.0  # seconds between recorded samples
+EVENT_SESSION_SAVED = "domyos_rower_session_saved"
+
+CONF_STRAVA = "strava"
+CONF_OUTPUT_DIR = "output_dir"
+CONF_SPORT_TYPE = "sport_type"
+CONF_GPX_LAT = "gpx_latitude"
+CONF_GPX_LON = "gpx_longitude"
+SPORT_TYPES = ["Rowing", "VirtualRow"]
+DEFAULT_SPORT_TYPE = "Rowing"

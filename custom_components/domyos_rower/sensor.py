@@ -20,6 +20,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, STATUSES
 from .coordinator import DomyosRowerCoordinator
@@ -115,7 +116,7 @@ async def async_setup_entry(
     coordinator: DomyosRowerCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [DomyosRowerSensor(coordinator, desc) for desc in SENSORS]
-        + [DomyosRowerStatusSensor(coordinator)]
+        + [DomyosRowerStatusSensor(coordinator), DomyosRowerLastSessionSensor(coordinator)]
     )
 
 
@@ -165,4 +166,43 @@ class DomyosRowerStatusSensor(DomyosRowerEntity, SensorEntity):
             "services": c.services,
             "resistance_range": list(c.resistance_range),
             "resistance_range_from_rower": c.resistance_range_known,
+        }
+
+
+class DomyosRowerLastSessionSensor(DomyosRowerEntity, SensorEntity):
+    """Start time of the last recorded session; the details are in the attributes."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_icon = "mdi:history"
+
+    def __init__(self, coordinator: DomyosRowerCoordinator) -> None:
+        super().__init__(coordinator, "last_session")
+
+    @property
+    def native_value(self):
+        info = self.coordinator.last_session
+        return dt_util.parse_datetime(info["start"]) if info else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        info = self.coordinator.last_session
+        if not info:
+            return {}
+        summary = info.get("summary", {})
+        strava = info.get("strava") or {}
+        return {
+            "name": info.get("name"),
+            "folder": info.get("folder"),
+            "tcx_file": info.get("files", {}).get("tcx"),
+            "gpx_file": info.get("files", {}).get("gpx"),
+            "duration_s": summary.get("duration_s"),
+            "distance_m": summary.get("distance_m"),
+            "calories": summary.get("calories"),
+            "strokes": summary.get("strokes"),
+            "avg_cadence": summary.get("avg_cadence"),
+            "avg_power_w": summary.get("avg_power_w"),
+            "avg_hr": summary.get("avg_hr"),
+            "strava_status": strava.get("status", "not sent"),
+            "strava_url": strava.get("url"),
+            "strava_error": strava.get("error"),
         }

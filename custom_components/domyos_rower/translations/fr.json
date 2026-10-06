@@ -11,11 +11,39 @@
       },
       "bluetooth_confirm": {
         "description": "Veux-tu configurer {name} ?"
+      },
+      "strava_ask": {
+        "title": "Envoi vers Strava (facultatif)",
+        "description": "Les fichiers TCX et GPX de chaque séance sont toujours créés à l'arrêt de l'enregistrement. Veux-tu en plus pouvoir envoyer une séance à Strava avec un bouton ? (Rien n'est jamais envoyé automatiquement.)",
+        "data": {
+          "setup_strava": "Configurer l'envoi vers Strava"
+        }
+      },
+      "strava_app": {
+        "title": "Application Strava",
+        "description": "1. Ouvre https://www.strava.com/settings/api et crée ton application API (nom et site libres).\n2. Mets **localhost** dans « Domaine de rappel d'autorisation ».\n3. Recopie ici l'**ID client** (un nombre) et le **Code secret du client**.",
+        "data": {
+          "client_id": "ID client",
+          "client_secret": "Code secret du client"
+        }
+      },
+      "strava_code": {
+        "title": "Autoriser l'accès à Strava",
+        "description": "1. Ouvre ce lien et clique sur « Autoriser » : {url}\n2. Le navigateur affichera une page d'erreur (localhost) : c'est normal.\n3. Copie l'**adresse complète** de cette page (ou juste la valeur après `code=`) et colle-la ci-dessous.",
+        "data": {
+          "code": "Adresse ou code"
+        }
       }
     },
     "abort": {
       "no_devices_found": "Aucun rameur Domyos trouvé. Réveille-le (tire la poignée) et vérifie qu'un adaptateur ou proxy Bluetooth est à portée.",
       "already_configured": "Ce rameur est déjà configuré."
+    },
+    "error": {
+      "invalid_client_id": "L'ID client doit être un nombre.",
+      "invalid_client_secret": "Le code secret est obligatoire.",
+      "strava_auth_failed": "Strava a refusé ce code. Recommence l'autorisation (le code ne sert qu'une fois et expire vite).",
+      "strava_cannot_connect": "Impossible de joindre Strava."
     }
   },
   "entity": {
@@ -62,11 +90,17 @@
       },
       "pace_mmss": {
         "name": "Allure (mm:ss/500 m)"
+      },
+      "last_session": {
+        "name": "Dernière séance"
       }
     },
     "switch": {
       "connection": {
         "name": "Connexion Bluetooth"
+      },
+      "recording": {
+        "name": "Enregistrement de la séance"
       }
     },
     "number": {
@@ -76,6 +110,31 @@
       "distance_scale": {
         "name": "Étalonnage distance (multiplicateur)"
       }
+    },
+    "button": {
+      "generate_files": {
+        "name": "Générer les fichiers (TCX + GPX)"
+      },
+      "upload_strava": {
+        "name": "Envoyer la dernière séance à Strava"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Export des séances",
+        "description": "Dossier où sont écrits les fichiers TCX et GPX. Le GPX est un format GPS : une séance d'intérieur n'a pas de position, tous ses points utilisent donc les coordonnées ci-dessous (par défaut celles de ta maison dans HA).",
+        "data": {
+          "output_dir": "Dossier des fichiers",
+          "gpx_latitude": "Latitude du GPX",
+          "gpx_longitude": "Longitude du GPX",
+          "sport_type": "Type d’activité Strava"
+        }
+      }
+    },
+    "error": {
+      "cannot_write": "Impossible d'écrire dans ce dossier."
     }
   }
 }
