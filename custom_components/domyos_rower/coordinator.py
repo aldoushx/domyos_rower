@@ -34,6 +34,9 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .const import (
     ACK_TIMEOUT,
+    DISPLAY_INTERVAL,
+    DISTANCE_SCALE_MAX,
+    DISTANCE_SCALE_MIN,
     DOMAIN,
     FTMS_CMD_TIMEOUT,
     FTMS_STROKE_IDLE,
@@ -64,6 +67,7 @@ from .protocol import (
     RESISTANCE_MIN,
     ROWER_DATA,
     RowerData,
+    build_display_frames,
     build_ftms_set_resistance,
     build_resistance_frames,
     parse_ftms_response,
@@ -127,6 +131,18 @@ class DomyosRowerCoordinator:
         self._ftms_strokes: int | None = None
         self._ftms_stroke_t = 0.0
 
+        # distance calibration (multiplier applied to distance and what derives from it)
+        self.distance_scale = 1.0
+        self._last_display = 0.0
+
+        # values the rower doesn't send are derived here, like QZ does
+        self._rower_sends_power = False
+        self._rower_sends_elapsed = False
+        self._seen_strokes: int | None = None
+        self._last_stroke_change = float("-inf")
+        self._active_time = 0.0
+        self._tick_t = 0.0
+
         # resistance control
         self.resistance_range: tuple[float, float, float] = (
             float(RESISTANCE_MIN),
@@ -138,6 +154,71 @@ class DomyosRowerCoordinator:
         self._expected_resistance: float | None = None
         self._expected_until = 0.0
         self._commanded_resistance: float | None = None
+
+    # ------------------------------------------------------------ calibration
+    @property
+    def view(self) -> RowerData:
+        """Rower data with the distance calibration applied.
+
+        Scaled: distance, speed, pace (inverse) and the power derived from the pace.
+        Untouched: strokes, cadence, calories, resistance, heart rate, time, and a power
+        value that the rower itself sends.
+        """
+        k = self.distance_scale
+        d = self.data
+        if k == 1.0:
+            return d
+        pace = round(d.pace_s500 / k) if d.pace_s500 else d.pace_s500
+        power = d.power_w if self._rower_sends_power else self._power_from_pace(pace, d.cadence)
+        return replace(
+            d,
+            distance_m=round(d.distance_m * k, 1) if d.distance_m is not None else None,
+            speed_kmh=round(d.speed_kmh * k, 2) if d.speed_kmh is not None else None,
+            pace_s500=pace,
+            power_w=power,
+        )
+
+    @callback
+    def async_set_distance_scale(self, value: float) -> None:
+        self.distance_scale = round(
+            max(DISTANCE_SCALE_MIN, min(DISTANCE_SCALE_MAX, float(value))), 3
+        )
+        self._push()
+
+    # ------------------------------------------------------------ derived values
+    @property
+    def power_is_calculated(self) -> bool:
+        return not self._rower_sends_power
+
+    @staticmethod
+    def _power_from_pace(pace_s500: int | None, cadence: float | None) -> int:
+        """Concept2 formula, as in QZ: watts = 2.8 * (500 / pace_s_per_500m)^3."""
+        if not pace_s500 or pace_s500 <= 0 or not cadence:
+            return 0
+        return max(0, round(2.8 * (500.0 / pace_s500) ** 3))
+
+    def _note_strokes(self, strokes: int | None, now: float) -> None:
+        if strokes is None:
+            return
+        if self._seen_strokes is not None:
+            if strokes < self._seen_strokes:  # the console started a new workout
+                self._active_time = 0.0
+            if strokes != self._seen_strokes:
+                self._last_stroke_change = now
+        self._seen_strokes = strokes
+
+    def _tick_derived(self, now: float) -> None:
+        """Workout timer: counts while strokes keep coming (rower sends no elapsed time)."""
+        dt = min(max(now - self._tick_t, 0.0), 1.0)
+        self._tick_t = now
+        if self._rower_sends_elapsed:
+            return
+        if now - self._last_stroke_change <= FTMS_STROKE_IDLE:
+            self._active_time += dt
+        elapsed = int(self._active_time)
+        if self.data.elapsed_s != elapsed:
+            self.data = replace(self.data, elapsed_s=elapsed)
+            self._push()
 
     # ------------------------------------------------------------ resistance
     @property
@@ -421,6 +502,12 @@ class DomyosRowerCoordinator:
         self._ftms_cp = None
         self._ftms_strokes = None
         self._ftms_stroke_t = time.monotonic()
+        self._rower_sends_power = False
+        self._rower_sends_elapsed = False
+        self._seen_strokes = None
+        self._last_stroke_change = float("-inf")
+        self._active_time = 0.0
+        self._tick_t = time.monotonic()
         self._last_logged_error = None
 
     # ------------------------------------------------------------ FTMS
@@ -537,6 +624,7 @@ class DomyosRowerCoordinator:
         while client.is_connected and self.enabled:
             await self._send_pending_resistance(client)
             self._ftms_idle_check()
+            self._tick_derived(time.monotonic())
             await asyncio.sleep(POLL_INTERVAL)
 
     def _ftms_idle_check(self) -> None:
@@ -563,7 +651,17 @@ class DomyosRowerCoordinator:
         if parsed.strokes is not None and parsed.strokes != self._ftms_strokes:
             self._ftms_strokes = parsed.strokes
             self._ftms_stroke_t = now
+        self._note_strokes(parsed.strokes, now)
+        if parsed.power_w is not None:
+            self._rower_sends_power = True
+        if parsed.elapsed_s is not None:
+            self._rower_sends_elapsed = True
         self.data = self.data.merged(parsed)
+        if not self._rower_sends_power:
+            self.data = replace(
+                self.data,
+                power_w=self._power_from_pace(self.data.pace_s500, self.data.cadence),
+            )
         self._last_packet = now
         self._check_expected(now)
         self._ftms_idle_check()
@@ -577,6 +675,26 @@ class DomyosRowerCoordinator:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._answer_event.wait(), ACK_TIMEOUT)
 
+    async def _send_display(self, client) -> None:
+        """Refresh the console screen (what QZ's updateDisplay() does every second)."""
+        d = self.view
+        frames = build_display_frames(
+            d.elapsed_s or 0,
+            d.speed_kmh or 0,
+            d.heart_rate or 0,
+            d.cadence or 0,
+            d.calories or 0,
+            (d.distance_m or 0) / 1000.0,
+        )
+        previous = self._op
+        self._step("domyos display")
+        await self._write(client, frames[0], False)
+        await self._write(client, frames[1], True)
+        await self._write(client, frames[2], False)
+        await self._write(client, frames[3], True)
+        self._step(previous)
+        self._last_display = time.monotonic()
+
     async def _run_proprietary(self, client) -> bool:
         """Returns True if the console answered with status packets, False if silent."""
         self._step("subscribe domyos")
@@ -585,13 +703,18 @@ class DomyosRowerCoordinator:
         for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
             self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
             await self._write(client, frame, wait_answer)
+        await self._send_display(client)  # QZ ends its init with updateDisplay(0)
         self._step("domyos polling")
 
         started = time.monotonic()
         self._last_packet = started
         while client.is_connected and self.enabled:
-            await self._write(client, NOOP, False)
+            if time.monotonic() - self._last_display >= DISPLAY_INTERVAL:
+                await self._send_display(client)  # replaces the no-op, like QZ
+            else:
+                await self._write(client, NOOP, False)
             await self._send_pending_resistance(client)
+            self._tick_derived(time.monotonic())
             await asyncio.sleep(POLL_INTERVAL)
             now = time.monotonic()
             if not self._got_packet and now - started > PROP_NO_DATA_TIMEOUT:
@@ -623,7 +746,13 @@ class DomyosRowerCoordinator:
         self._last_packet = now
         self._got_packet = True
 
-        self.data = replace(parsed, distance_m=round(self._distance_m, 1))
+        self._note_strokes(parsed.strokes, now)
+        self.data = replace(
+            parsed,
+            distance_m=round(self._distance_m, 1),
+            power_w=self._power_from_pace(parsed.pace_s500, parsed.cadence),
+            elapsed_s=self.data.elapsed_s,
+        )
         self._check_expected(now)
         self._set_connected(True)
         self._push()

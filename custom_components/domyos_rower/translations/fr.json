@@ -30,7 +30,7 @@
         "name": "Vitesse"
       },
       "pace": {
-        "name": "Allure"
+        "name": "Allure (s/500 m)"
       },
       "distance": {
         "name": "Distance"
@@ -59,6 +59,9 @@
           "connected": "Connecté",
           "error": "Erreur"
         }
+      },
+      "pace_mmss": {
+        "name": "Allure (mm:ss/500 m)"
       }
     },
     "switch": {
@@ -69,6 +72,9 @@
     "number": {
       "resistance_target": {
         "name": "Résistance (consigne)"
+      },
+      "distance_scale": {
+        "name": "Étalonnage distance (multiplicateur)"
       }
     }
   }

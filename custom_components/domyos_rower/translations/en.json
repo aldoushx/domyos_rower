@@ -30,7 +30,7 @@
         "name": "Speed"
       },
       "pace": {
-        "name": "Pace"
+        "name": "Pace (s/500 m)"
       },
       "distance": {
         "name": "Distance"
@@ -59,6 +59,9 @@
           "connected": "Connected",
           "error": "Error"
         }
+      },
+      "pace_mmss": {
+        "name": "Pace (mm:ss/500 m)"
       }
     },
     "switch": {
@@ -69,6 +72,9 @@
     "number": {
       "resistance_target": {
         "name": "Resistance target"
+      },
+      "distance_scale": {
+        "name": "Distance calibration (multiplier)"
       }
     }
   }

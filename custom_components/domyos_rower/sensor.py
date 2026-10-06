@@ -24,12 +24,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN, STATUSES
 from .coordinator import DomyosRowerCoordinator
 from .entity import DomyosRowerEntity
-from .protocol import RowerData
+from .protocol import RowerData, format_pace
 
 
 @dataclass(frozen=True, kw_only=True)
 class RowerSensorDescription(SensorEntityDescription):
-    value_fn: Callable[[RowerData], float | int | None]
+    value_fn: Callable[[RowerData], float | int | str | None]
 
 
 SENSORS: tuple[RowerSensorDescription, ...] = (
@@ -59,6 +59,11 @@ SENSORS: tuple[RowerSensorDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:timer-outline",
         value_fn=lambda d: d.pace_s500,
+    ),
+    RowerSensorDescription(
+        key="pace_mmss",
+        icon="mdi:timer-outline",
+        value_fn=lambda d: format_pace(d.pace_s500),
     ),
     RowerSensorDescription(
         key="distance",
@@ -129,7 +134,7 @@ class DomyosRowerSensor(DomyosRowerEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return self.entity_description.value_fn(self.coordinator.data)
+        return self.entity_description.value_fn(self.coordinator.view)
 
 
 class DomyosRowerStatusSensor(DomyosRowerEntity, SensorEntity):
@@ -152,6 +157,8 @@ class DomyosRowerStatusSensor(DomyosRowerEntity, SensorEntity):
         c = self.coordinator
         return {
             "protocol": c.mode,
+            "power_calculated": c.power_is_calculated,
+            "distance_scale": c.distance_scale,
             "last_error": c.last_error,
             "last_failed_step": c.last_operation,
             "consecutive_failures": c.failures,

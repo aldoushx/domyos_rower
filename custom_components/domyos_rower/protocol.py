@@ -228,3 +228,47 @@ def parse_resistance_range(data: bytes) -> tuple[float, float, float] | None:
     if hi <= lo or hi <= 0:
         return None
     return lo, hi, inc if inc > 0 else 1.0
+
+
+# ---- console screen (Domyos protocol only): QZ's updateDisplay(), once per second --------
+_DISPLAY2_TEMPLATE = bytes([0xF0, 0xCD, 0x01, 0x00, 0x00, 0x01] + [0xFF] * 20 + [0x00])
+_DISPLAY_TEMPLATE = bytes(
+    [0xF0, 0xCB, 0x03, 0x00, 0x00, 0xFF, 0x01, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00,
+     0x01, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]
+)
+
+
+def build_display_frames(
+    elapsed_s: int,
+    speed_kmh: float,
+    heart_rate: float,
+    cadence: float,
+    calories: float,
+    odometer_km: float,
+) -> tuple[bytes, bytes, bytes, bytes]:
+    """Four chunks to write in order: (display2 20 B, display2 7 B, display 20 B, display 7 B)."""
+    d2 = bytearray(_DISPLAY2_TEMPLATE)
+    odo = int(max(odometer_km, 0) * 10) & 0xFFFF  # tenths of km
+    d2[3], d2[4] = (odo >> 8) & 0xFF, odo & 0xFF
+    d2[26] = sum(d2[:26]) & 0xFF
+
+    d = bytearray(_DISPLAY_TEMPLATE)
+    elapsed_s = max(int(elapsed_s), 0)
+    d[3] = (elapsed_s // 60) & 0xFF
+    d[4] = (elapsed_s % 60) & 0xFF
+    speed = int(max(speed_kmh, 0)) & 0xFFFF
+    d[7], d[8] = (speed >> 8) & 0xFF, speed & 0xFF
+    d[12] = int(max(heart_rate, 0)) & 0xFF
+    d[16] = int(max(cadence, 0)) & 0xFF
+    kcal = int(max(calories, 0)) & 0xFFFF
+    d[19], d[20] = (kcal >> 8) & 0xFF, kcal & 0xFF
+    d[26] = sum(d[:26]) & 0xFF
+    return bytes(d2[:20]), bytes(d2[20:]), bytes(d[:20]), bytes(d[20:])
+
+
+def format_pace(seconds: int | None) -> str | None:
+    """Pace per 500 m as mm:ss (178 -> '02:58')."""
+    if seconds is None or seconds <= 0:
+        return None
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes:02d}:{secs:02d}"
