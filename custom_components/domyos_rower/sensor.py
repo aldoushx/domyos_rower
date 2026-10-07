@@ -160,6 +160,7 @@ class DomyosRowerStatusSensor(DomyosRowerEntity, SensorEntity):
             "protocol": c.mode,
             "power_calculated": c.power_is_calculated,
             "distance_scale": c.distance_scale,
+            "console_display": c.console_display,
             "last_error": c.last_error,
             "last_failed_step": c.last_operation,
             "consecutive_failures": c.failures,

@@ -178,6 +178,10 @@ class DomyosRowerCoordinator:
         self._strava_obj: StravaClient | None = None
         self._store: Store = Store(hass, 1, f"{DOMAIN}_session_{entry.entry_id}")
 
+        # Console screen refresh (Domyos protocol only). OFF by default: on at least one
+        # console it blanked the screen, so it is opt-in through a switch.
+        self.console_display = False
+
         # distance calibration (multiplier applied to distance and what derives from it)
         self.distance_scale = 1.0
         self._last_display = 0.0
@@ -224,6 +228,11 @@ class DomyosRowerCoordinator:
             pace_s500=pace,
             power_w=power,
         )
+
+    @callback
+    def async_set_console_display(self, value: bool) -> None:
+        self.console_display = bool(value)
+        self._push()
 
     @callback
     def async_set_distance_scale(self, value: float) -> None:
@@ -981,13 +990,14 @@ class DomyosRowerCoordinator:
         for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
             self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
             await self._write(client, frame, wait_answer)
-        await self._send_display(client)  # QZ ends its init with updateDisplay(0)
+        if self.console_display:
+            await self._send_display(client)  # QZ ends its init with updateDisplay(0)
         self._step("domyos polling")
 
         started = time.monotonic()
         self._last_packet = started
         while client.is_connected and self.enabled:
-            if time.monotonic() - self._last_display >= DISPLAY_INTERVAL:
+            if self.console_display and time.monotonic() - self._last_display >= DISPLAY_INTERVAL:
                 await self._send_display(client)  # replaces the no-op, like QZ
             else:
                 await self._write(client, NOOP, False)
