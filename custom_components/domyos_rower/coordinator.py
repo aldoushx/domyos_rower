@@ -18,6 +18,7 @@ from dataclasses import replace
 import logging
 import os
 import time
+import zlib
 
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
@@ -56,6 +57,7 @@ from .const import (
     MIN_GOOD_SESSION,
     RETRY_DELAYS,
     SAMPLE_INTERVAL,
+    SAMPLE_TOLERANCE,
     STALE_TIMEOUT,
     STATUS_CONNECTED,
     STATUS_CONNECTING,
@@ -88,6 +90,7 @@ from .protocol import (
     parse_resistance_range,
 )
 
+from .fit import build_fit
 from .session import SessionRecorder, build_gpx, build_tcx, file_stem
 from .strava import StravaClient, StravaError
 
@@ -101,13 +104,15 @@ def default_output_dir(hass: HomeAssistant) -> str:
     return hass.config.path("domyos_rower")
 
 
-def _write_files(folder: str, stem: str, tcx: str, gpx: str) -> dict[str, str]:
+def _write_files(folder: str, stem: str, tcx: str, gpx: str, fit: bytes) -> dict[str, str]:
     os.makedirs(folder, exist_ok=True)
-    paths = {"tcx": os.path.join(folder, f"{stem}.tcx"), "gpx": os.path.join(folder, f"{stem}.gpx")}
+    paths = {ext: os.path.join(folder, f"{stem}.{ext}") for ext in ("tcx", "gpx", "fit")}
     with open(paths["tcx"], "w", encoding="utf-8") as fh:
         fh.write(tcx)
     with open(paths["gpx"], "w", encoding="utf-8") as fh:
         fh.write(gpx)
+    with open(paths["fit"], "wb") as fh:
+        fh.write(fit)
     return paths
 
 
@@ -169,7 +174,7 @@ class DomyosRowerCoordinator:
         self.last_session: dict | None = None
         self.strava_busy = False
         self._rec_mono = 0.0
-        self._last_sample_mono = float("-inf")
+        self._next_sample_mono = float("-inf")
         self._strava_obj: StravaClient | None = None
         self._store: Store = Store(hass, 1, f"{DOMAIN}_session_{entry.entry_id}")
 
@@ -293,9 +298,13 @@ class DomyosRowerCoordinator:
     def _sample(self, now: float) -> None:
         if not (self.recording and self.connected and self.recorder):
             return
-        if now - self._last_sample_mono < SAMPLE_INTERVAL:
+        if now + SAMPLE_TOLERANCE < self._next_sample_mono:
             return
-        self._last_sample_mono = now
+        # Fixed 1 Hz schedule (not "1 s after the previous tick") so ticks of ~0.3 s don't stretch it.
+        base = now if self._next_sample_mono == float("-inf") else self._next_sample_mono
+        self._next_sample_mono = base + SAMPLE_INTERVAL
+        if self._next_sample_mono < now:  # fell behind (e.g. event loop stalled): don't burst
+            self._next_sample_mono = now + SAMPLE_INTERVAL
         d = self.view
         self.recorder.add(
             now - self._rec_mono,
@@ -316,7 +325,7 @@ class DomyosRowerCoordinator:
             return
         self.recorder = SessionRecorder(dt_util.utcnow())
         self._rec_mono = time.monotonic()
-        self._last_sample_mono = float("-inf")
+        self._next_sample_mono = float("-inf")
         self._active_time = 0.0  # the workout timer starts with the recording
         self.recording = True
         _LOGGER.info("%s: session recording started", self.address)
@@ -354,7 +363,11 @@ class DomyosRowerCoordinator:
         assert self.recorder is not None
         start_local = dt_util.as_local(self.recorder.start)
         name = f"Rameur Domyos – {start_local:%d/%m/%Y %H:%M}"
-        notes = "Séance enregistrée avec Home Assistant."
+        summ = self.recorder.summary()
+        notes = (
+            f"Séance enregistrée avec Home Assistant : {summ['strokes']} coups, "
+            f"cadence moyenne {summ['avg_cadence']:g} coups/min, {summ['calories']} kcal."
+        )
         if self.power_is_calculated:
             notes += " Puissance estimée à partir de l'allure (formule du Concept2)."
         if self.distance_scale != 1.0:
@@ -362,7 +375,7 @@ class DomyosRowerCoordinator:
         return name, notes, file_stem(start_local)
 
     async def async_generate_files(self) -> dict:
-        """Write <stem>.tcx and <stem>.gpx in the export folder. Never uploads anything."""
+        """Write <stem>.tcx, .gpx and .fit in the export folder. Never uploads anything."""
         if not self.has_session:
             raise HomeAssistantError("Aucune séance enregistrée à exporter.")
         if self.recording:
@@ -377,8 +390,16 @@ class DomyosRowerCoordinator:
         lon = float(self._opt(CONF_GPX_LON, self.hass.config.longitude))
         tcx = build_tcx(rec, notes)
         gpx = build_gpx(rec, name, lat, lon)
+        offset = dt_util.as_local(rec.start).utcoffset()
+        fit = build_fit(
+            rec,
+            serial=zlib.crc32(self.address.encode()) & 0xFFFFFFFF,
+            utc_offset_s=int(offset.total_seconds()) if offset else 0,
+        )
         try:
-            paths = await self.hass.async_add_executor_job(_write_files, folder, stem, tcx, gpx)
+            paths = await self.hass.async_add_executor_job(
+                _write_files, folder, stem, tcx, gpx, fit
+            )
         except OSError as err:
             raise HomeAssistantError(f"écriture impossible dans « {folder} » ({err})") from err
 
@@ -407,6 +428,7 @@ class DomyosRowerCoordinator:
                 "folder": folder,
                 "tcx": paths["tcx"],
                 "gpx": paths["gpx"],
+                "fit": paths["fit"],
                 **{k: summary.get(k) for k in ("duration_s", "distance_m", "calories", "strokes")},
             },
         )

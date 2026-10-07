@@ -195,6 +195,8 @@ class DomyosRowerLastSessionSensor(DomyosRowerEntity, SensorEntity):
             "folder": info.get("folder"),
             "tcx_file": info.get("files", {}).get("tcx"),
             "gpx_file": info.get("files", {}).get("gpx"),
+            "fit_file": info.get("files", {}).get("fit"),
+            "active_time_s": summary.get("timer_s"),
             "duration_s": summary.get("duration_s"),
             "distance_m": summary.get("distance_m"),
             "calories": summary.get("calories"),

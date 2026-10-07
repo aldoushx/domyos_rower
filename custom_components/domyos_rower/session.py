@@ -88,16 +88,21 @@ class SessionRecorder:
         if not s:
             return {"duration_s": 0, "distance_m": 0.0, "calories": 0, "strokes": 0}
         hr = [x.heart_rate for x in s if x.heart_rate]
-        pw = [x.power_w for x in s if x.power_w is not None]
         moving = [x for x in s if x.cadence > 0]
+        pw = [x.power_w for x in moving if x.power_w is not None]
+        timer = sum(
+            min(b.t - a.t, 2.0) for a, b in zip(s, s[1:]) if b.cadence > 0
+        )
         return {
             "duration_s": round(self.duration_s),
+            "timer_s": round(timer),
             "distance_m": round(s[-1].distance_m, 1),
             "calories": round(s[-1].calories),
             "strokes": s[-1].strokes,
             "avg_speed_ms": round(sum(x.speed_ms for x in moving) / len(moving), 3) if moving else 0.0,
             "max_speed_ms": max(x.speed_ms for x in s),
             "avg_cadence": round(sum(x.cadence for x in moving) / len(moving), 1) if moving else 0.0,
+            "max_cadence": max((x.cadence for x in s), default=0.0),
             "avg_hr": round(sum(hr) / len(hr)) if hr else None,
             "max_hr": max(hr) if hr else None,
             "avg_power_w": round(sum(pw) / len(pw)) if pw else None,
@@ -130,7 +135,7 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _points(session: SessionRecorder) -> list[tuple[datetime, Sample]]:
+def export_points(session: SessionRecorder) -> list[tuple[datetime, Sample]]:
     """One point per distinct second (formats need strictly increasing times)."""
     points: list[tuple[datetime, Sample]] = []
     seen: int | None = None
@@ -145,7 +150,7 @@ def _points(session: SessionRecorder) -> list[tuple[datetime, Sample]]:
 
 def build_tcx(session: SessionRecorder, notes: str = "") -> str:
     """Garmin TrainingCenterDatabase v2. Sport 'Other' (rowing isn't a TCX sport)."""
-    pts = _points(session)
+    pts = export_points(session)
     if not pts:
         raise ValueError("empty session")
     summ = session.summary()
@@ -194,7 +199,7 @@ def build_tcx(session: SessionRecorder, notes: str = "") -> str:
 def build_gpx(session: SessionRecorder, name: str, latitude: float, longitude: float) -> str:
     """GPX 1.1 track. GPX is a GPS format: an indoor row has no position, so every point
     uses the given placeholder coordinates. Only time, heart rate and cadence are carried."""
-    pts = _points(session)
+    pts = export_points(session)
     if not pts:
         raise ValueError("empty session")
     rows = []

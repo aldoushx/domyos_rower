@@ -14,7 +14,7 @@
       },
       "strava_ask": {
         "title": "Strava upload (optional)",
-        "description": "TCX and GPX files are always created when you stop recording. Do you also want a button to send a session to Strava? (Nothing is ever uploaded automatically.)",
+        "description": "TCX, GPX and FIT files are always created when you stop recording. Do you also want a button to send a session to Strava? (Nothing is ever uploaded automatically.)",
         "data": {
           "setup_strava": "Set up the Strava upload"
         }
@@ -113,7 +113,7 @@
     },
     "button": {
       "generate_files": {
-        "name": "Generate files (TCX + GPX)"
+        "name": "Generate files (TCX, GPX, FIT)"
       },
       "upload_strava": {
         "name": "Send last session to Strava"
@@ -124,7 +124,7 @@
     "step": {
       "init": {
         "title": "Session export",
-        "description": "Folder where the TCX and GPX files are written. GPX is a GPS format: an indoor session has no position, so every point uses the coordinates below (your Home Assistant home by default).",
+        "description": "Folder where the TCX, GPX and FIT files are written. GPX is a GPS format: an indoor session has no position, so every point uses the coordinates below (your Home Assistant home by default).",
         "data": {
           "output_dir": "Files folder",
           "gpx_latitude": "GPX latitude",

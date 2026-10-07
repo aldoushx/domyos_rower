@@ -14,7 +14,7 @@
       },
       "strava_ask": {
         "title": "Envoi vers Strava (facultatif)",
-        "description": "Les fichiers TCX et GPX de chaque séance sont toujours créés à l'arrêt de l'enregistrement. Veux-tu en plus pouvoir envoyer une séance à Strava avec un bouton ? (Rien n'est jamais envoyé automatiquement.)",
+        "description": "Les fichiers TCX, GPX et FIT de chaque séance sont toujours créés à l'arrêt de l'enregistrement. Veux-tu en plus pouvoir envoyer une séance à Strava avec un bouton ? (Rien n'est jamais envoyé automatiquement.)",
         "data": {
           "setup_strava": "Configurer l'envoi vers Strava"
         }
@@ -113,7 +113,7 @@
     },
     "button": {
       "generate_files": {
-        "name": "Générer les fichiers (TCX + GPX)"
+        "name": "Générer les fichiers (TCX, GPX, FIT)"
       },
       "upload_strava": {
         "name": "Envoyer la dernière séance à Strava"
@@ -124,7 +124,7 @@
     "step": {
       "init": {
         "title": "Export des séances",
-        "description": "Dossier où sont écrits les fichiers TCX et GPX. Le GPX est un format GPS : une séance d'intérieur n'a pas de position, tous ses points utilisent donc les coordonnées ci-dessous (par défaut celles de ta maison dans HA).",
+        "description": "Dossier où sont écrits les fichiers TCX, GPX et FIT. Le GPX est un format GPS : une séance d'intérieur n'a pas de position, tous ses points utilisent donc les coordonnées ci-dessous (par défaut celles de ta maison dans HA).",
         "data": {
           "output_dir": "Dossier des fichiers",
           "gpx_latitude": "Latitude du GPX",
