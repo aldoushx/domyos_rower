@@ -14,7 +14,7 @@
       },
       "strava_ask": {
         "title": "Envoi vers Strava (facultatif)",
-        "description": "Les fichiers TCX, GPX et FIT de chaque séance sont toujours créés à l'arrêt de l'enregistrement. Veux-tu en plus pouvoir envoyer une séance à Strava avec un bouton ? (Rien n'est jamais envoyé automatiquement.)",
+        "description": "Les fichiers TCX, GPX et FIT de chaque séance sont toujours créés à l'arrêt de l'enregistrement. Veux-tu en plus pouvoir envoyer une séance à Strava avec un bouton ? (Rien n'est jamais envoyé automatiquement.) ⚠️ Depuis juin 2026, l'API de Strava exige un abonnement Strava payant : sans abonnement, laisse décoché, les fichiers sont créés quand même et tu peux les importer toi-même.",
         "data": {
           "setup_strava": "Configurer l'envoi vers Strava"
         }

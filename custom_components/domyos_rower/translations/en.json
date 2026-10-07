@@ -14,7 +14,7 @@
       },
       "strava_ask": {
         "title": "Strava upload (optional)",
-        "description": "TCX, GPX and FIT files are always created when you stop recording. Do you also want a button to send a session to Strava? (Nothing is ever uploaded automatically.)",
+        "description": "TCX, GPX and FIT files are always created when you stop recording. Do you also want a button to send a session to Strava? (Nothing is ever uploaded automatically.) ⚠️ Since June 2026, Strava's API requires a paid Strava subscription: without one, leave this unchecked, the files are still created and you can import them yourself.",
         "data": {
           "setup_strava": "Set up the Strava upload"
         }
