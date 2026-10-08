@@ -1,0 +1,37 @@
+display_probe:
+  fields:
+    preset:
+      required: false
+      default: none
+      selector:
+        select:
+          options:
+            - none
+            - numbered
+    values:
+      required: false
+      example: '{"16": 30, "20": 99}'
+      selector:
+        object:
+    odometer_values:
+      required: false
+      example: '{"5": 1}'
+      selector:
+        object:
+    duration:
+      required: false
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 120
+          unit_of_measurement: s
+console_workout:
+  fields:
+    action:
+      required: true
+      selector:
+        select:
+          options:
+            - start
+            - stop

@@ -21,6 +21,7 @@ STATUS_ERROR = "error"
 STATUSES = [STATUS_DISABLED, STATUS_WAITING, STATUS_CONNECTING, STATUS_CONNECTED, STATUS_ERROR]
 
 DISPLAY_INTERVAL = 1.0  # Domyos mode: console screen refreshed once per second (like QZ)
+DISPLAY_FIRST_DELAY = 2.0  # extra wait before the first refresh after the init sequence
 DISTANCE_SCALE_MIN = 0.5
 DISTANCE_SCALE_MAX = 2.0
 
@@ -36,3 +37,8 @@ CONF_GPX_LAT = "gpx_latitude"
 CONF_GPX_LON = "gpx_longitude"
 SPORT_TYPES = ["Rowing", "VirtualRow"]
 DEFAULT_SPORT_TYPE = "Rowing"
+
+CONF_PROTOCOL = "protocol"
+PROTOCOL_AUTO = "auto"  # Domyos protocol when the rower has it (what QZ does), else FTMS
+PROTOCOL_FTMS = "ftms"  # standard FTMS even if the Domyos service exists (console screen untouched)
+PROTOCOLS = [PROTOCOL_AUTO, PROTOCOL_FTMS]

@@ -42,9 +42,13 @@ from .const import (
     CONF_GPX_LAT,
     CONF_GPX_LON,
     CONF_OUTPUT_DIR,
+    CONF_PROTOCOL,
     CONF_SPORT_TYPE,
     CONF_STRAVA,
     DEFAULT_SPORT_TYPE,
+    PROTOCOL_AUTO,
+    PROTOCOL_FTMS,
+    DISPLAY_FIRST_DELAY,
     DISPLAY_INTERVAL,
     DISTANCE_SCALE_MAX,
     DISTANCE_SCALE_MIN,
@@ -81,6 +85,9 @@ from .protocol import (
     RESISTANCE_MIN,
     ROWER_DATA,
     RowerData,
+    CONSOLE_START_FRAMES,
+    CONSOLE_STOP_FRAME,
+    PROBE_NUMBERED,
     build_display_frames,
     build_ftms_set_resistance,
     build_resistance_frames,
@@ -181,6 +188,8 @@ class DomyosRowerCoordinator:
         # Console screen refresh (Domyos protocol only). OFF by default: on at least one
         # console it blanked the screen, so it is opt-in through a switch.
         self.console_display = False
+        self._probe: dict | None = None  # raw-byte experiment on the screen frame
+        self._pending_console: str | None = None  # "start" | "stop" (console workout mode)
 
         # distance calibration (multiplier applied to distance and what derives from it)
         self.distance_scale = 1.0
@@ -233,6 +242,61 @@ class DomyosRowerCoordinator:
     def async_set_console_display(self, value: bool) -> None:
         self.console_display = bool(value)
         self._push()
+
+    @property
+    def probe_active(self) -> bool:
+        return self._probe is not None and time.monotonic() < self._probe["until"]
+
+    @callback
+    def async_probe_display(
+        self,
+        values: dict | None = None,
+        values2: dict | None = None,
+        preset: str = "none",
+        duration: float = 30.0,
+    ) -> None:
+        """Experiment: force raw bytes of the console screen frame for `duration` seconds."""
+        if self.mode != "proprietary" or not self.connected:
+            raise HomeAssistantError(
+                "Le test d'écran ne fonctionne qu'avec le protocole Domyos et un rameur connecté."
+            )
+        merged = dict(PROBE_NUMBERED) if preset == "numbered" else {}
+        merged.update({int(k): int(v) for k, v in (values or {}).items()})
+        try:
+            build_display_frames(0, 0, 0, 0, 0, 0, merged, values2)  # validates indexes/values
+        except ValueError as err:
+            raise HomeAssistantError(str(err)) from err
+        self._probe = {
+            "display": merged,
+            "display2": {int(k): int(v) for k, v in (values2 or {}).items()},
+            "until": time.monotonic() + max(1.0, min(float(duration), 120.0)),
+        }
+        self._last_display = float("-inf")  # send right away
+        _LOGGER.info("%s: screen probe %s for %s s", self.address, self._probe["display"], duration)
+        self._push()
+
+    @callback
+    def async_console_workout(self, action: str) -> None:
+        """Experiment: QZ's "start tape" / "stop tape" frames (console workout mode)."""
+        if self.mode != "proprietary" or not self.connected:
+            raise HomeAssistantError(
+                "Cette commande ne fonctionne qu'avec le protocole Domyos et un rameur connecté."
+            )
+        self._pending_console = action
+        self._push()
+
+    async def _send_pending_console(self, client) -> None:
+        action, self._pending_console = self._pending_console, None
+        if action is None:
+            return
+        self._step(f"console workout {action}")
+        if action == "start":
+            for frame, wait_answer in CONSOLE_START_FRAMES:
+                await self._write(client, frame, wait_answer)
+        else:
+            await self._write(client, CONSOLE_STOP_FRAME, True)
+        _LOGGER.info("%s: console workout %s sent", self.address, action)
+        self._step("domyos polling")
 
     @callback
     def async_set_distance_scale(self, value: float) -> None:
@@ -754,6 +818,11 @@ class DomyosRowerCoordinator:
             _LOGGER.info("%s: connected, services: %s", self.address, self.services)
             has_prop = services.get_service(PROP_SERVICE) is not None
             has_ftms = services.get_service(FTMS_SERVICE) is not None
+            if has_prop and has_ftms and self._opt(CONF_PROTOCOL, PROTOCOL_AUTO) == PROTOCOL_FTMS:
+                _LOGGER.info(
+                    "%s: FTMS forced by the options (the Domyos service is ignored)", self.address
+                )
+                has_prop = False
 
             if has_prop:
                 self.mode = "proprietary"
@@ -972,6 +1041,8 @@ class DomyosRowerCoordinator:
             d.cadence or 0,
             d.calories or 0,
             (d.distance_m or 0) / 1000.0,
+            self._probe["display"] if self.probe_active else None,
+            self._probe["display2"] if self.probe_active else None,
         )
         previous = self._op
         self._step("domyos display")
@@ -990,18 +1061,24 @@ class DomyosRowerCoordinator:
         for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
             self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
             await self._write(client, frame, wait_answer)
-        if self.console_display:
-            await self._send_display(client)  # QZ ends its init with updateDisplay(0)
+        # QZ ends its init with updateDisplay(0); here the first refresh waits ~3 s so the
+        # console has finished processing the init frames (a refresh sent right away was
+        # followed by a blank screen on one console).
+        self._last_display = time.monotonic() + DISPLAY_FIRST_DELAY
         self._step("domyos polling")
 
         started = time.monotonic()
         self._last_packet = started
         while client.is_connected and self.enabled:
-            if self.console_display and time.monotonic() - self._last_display >= DISPLAY_INTERVAL:
+            if (
+                (self.console_display or self.probe_active)
+                and time.monotonic() - self._last_display >= DISPLAY_INTERVAL
+            ):
                 await self._send_display(client)  # replaces the no-op, like QZ
             else:
                 await self._write(client, NOOP, False)
             await self._send_pending_resistance(client)
+            await self._send_pending_console(client)
             self._tick_derived(time.monotonic())
             await asyncio.sleep(POLL_INTERVAL)
             now = time.monotonic()
