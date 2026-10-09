@@ -51,7 +51,7 @@ INIT_FRAMES: tuple[tuple[bytes, bool], ...] = (
     (bytes.fromhex("f0adffff0005ffffffffffffff0000ffffff01ff"), False),
 )
 
-_INIT_COUNT = {"full": 12, "no_bt_screen": 7, "minimal": 2, "none": 0}
+_INIT_COUNT = {"full": 12, "no_bt_screen": 7, "minimal": 2, "none": 0, "passive": 0}
 
 
 def init_frames(mode: str = "full") -> tuple[tuple[bytes, bool], ...]:
@@ -279,7 +279,7 @@ def build_display_frames(
     elapsed_s: int,
     speed_kmh: float,
     heart_rate: float,
-    cadence: float,
+    strokes: float,
     calories: float,
     odometer_km: float,
     overrides: dict[int, int] | None = None,
@@ -305,7 +305,10 @@ def build_display_frames(
     speed = int(max(speed_kmh, 0)) & 0xFFFF
     d[7], d[8] = (speed >> 8) & 0xFF, speed & 0xFF
     d[12] = int(max(heart_rate, 0)) & 0xFF
-    d[16] = int(max(cadence, 0)) & 0xFF
+    # Bytes 15/16 feed the "Count" field, shown divided by 10 (probe: 0x0F10 -> 385; 27 -> 2),
+    # so the total stroke count is sent x10. The Spm and Kcal fields are still unmapped.
+    count = int(max(strokes, 0) * 10) & 0xFFFF
+    d[15], d[16] = (count >> 8) & 0xFF, count & 0xFF
     # On the Rower 500 the "Km" field is bytes 19/20, in tenths of km (QZ puts kcal there,
     # which this console shows as distance).
     km10 = int(max(odometer_km, 0) * 10) & 0xFFFF

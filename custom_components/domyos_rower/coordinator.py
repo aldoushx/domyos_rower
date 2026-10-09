@@ -45,6 +45,7 @@ from .const import (
     CONF_INIT_MODE,
     CONF_PROTOCOL,
     INIT_FULL,
+    INIT_PASSIVE,
     CONF_SPORT_TYPE,
     CONF_STRAVA,
     DEFAULT_SPORT_TYPE,
@@ -965,7 +966,9 @@ class DomyosRowerCoordinator:
                 _LOGGER.debug("%s: cannot read resistance range: %s", self.address, _err_text(err))
 
         # Like QZ for DOMYOS-ROW-xxxx: "Start or Resume" lets the console stream its data.
-        if self._ftms_cp is not None:
+        if self._opt(CONF_INIT_MODE, INIT_FULL) == INIT_PASSIVE:
+            _LOGGER.info("%s: passive mode, Start/Resume not sent", self.address)
+        elif self._ftms_cp is not None:
             self._step(
                 f"write Start/Resume (handle {getattr(self._ftms_cp, 'handle', '?')})"
             )
@@ -1040,7 +1043,7 @@ class DomyosRowerCoordinator:
             d.elapsed_s or 0,
             d.speed_kmh or 0,
             d.heart_rate or 0,
-            d.cadence or 0,
+            d.strokes or 0,
             d.calories or 0,
             (d.distance_m or 0) / 1000.0,
             self._probe["display"] if self.probe_active else None,

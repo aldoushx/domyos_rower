@@ -50,4 +50,5 @@ INIT_FULL = "full"
 INIT_NO_BT_SCREEN = "no_bt_screen"
 INIT_MINIMAL = "minimal"
 INIT_NONE = "none"
-INIT_MODES = [INIT_FULL, INIT_NO_BT_SCREEN, INIT_MINIMAL, INIT_NONE]
+INIT_PASSIVE = "passive"  # FTMS only: subscribe, never write Start/Resume (experimental)
+INIT_MODES = [INIT_FULL, INIT_NO_BT_SCREEN, INIT_MINIMAL, INIT_NONE, INIT_PASSIVE]

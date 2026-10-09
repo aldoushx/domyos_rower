@@ -188,7 +188,8 @@
         "full": "Complète (comme QZ, écran en mode appli)",
         "no_bt_screen": "Sans écran Bluetooth (7 trames)",
         "minimal": "Minimale (2 trames)",
-        "none": "Aucune : ne rien envoyer à la console"
+        "none": "Aucune : ne rien envoyer à la console",
+        "passive": "Passive : FTMS sans Start/Resume (expérimental)"
       }
     }
   }
