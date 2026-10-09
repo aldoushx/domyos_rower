@@ -21,7 +21,7 @@ STATUS_ERROR = "error"
 STATUSES = [STATUS_DISABLED, STATUS_WAITING, STATUS_CONNECTING, STATUS_CONNECTED, STATUS_ERROR]
 
 DISPLAY_INTERVAL = 1.0  # Domyos mode: console screen refreshed once per second (like QZ)
-DISPLAY_FIRST_DELAY = 2.0  # extra wait before the first refresh after the init sequence
+DISPLAY_FIRST_DELAY = 20.0  # extra wait before the first refresh after the init sequence
 DISTANCE_SCALE_MIN = 0.5
 DISTANCE_SCALE_MAX = 2.0
 
@@ -42,3 +42,12 @@ CONF_PROTOCOL = "protocol"
 PROTOCOL_AUTO = "auto"  # Domyos protocol when the rower has it (what QZ does), else FTMS
 PROTOCOL_FTMS = "ftms"  # standard FTMS even if the Domyos service exists (console screen untouched)
 PROTOCOLS = [PROTOCOL_AUTO, PROTOCOL_FTMS]
+
+# Domyos init sequence: how much of QZ's 12 frames is sent. The last frames switch the
+# console to "app" mode (Bluetooth logo, little information); "none" sends nothing.
+CONF_INIT_MODE = "init_mode"
+INIT_FULL = "full"
+INIT_NO_BT_SCREEN = "no_bt_screen"
+INIT_MINIMAL = "minimal"
+INIT_NONE = "none"
+INIT_MODES = [INIT_FULL, INIT_NO_BT_SCREEN, INIT_MINIMAL, INIT_NONE]

@@ -51,6 +51,14 @@ INIT_FRAMES: tuple[tuple[bytes, bool], ...] = (
     (bytes.fromhex("f0adffff0005ffffffffffffff0000ffffff01ff"), False),
 )
 
+_INIT_COUNT = {"full": 12, "no_bt_screen": 7, "minimal": 2, "none": 0}
+
+
+def init_frames(mode: str = "full") -> tuple[tuple[bytes, bool], ...]:
+    """Init frames to send for `mode` (see INIT_MODES)."""
+    return INIT_FRAMES[: _INIT_COUNT.get(mode, 12)]
+
+
 PROP_PACKET_LEN = 26
 RESISTANCE_MIN = 1
 RESISTANCE_MAX = 15
@@ -298,8 +306,10 @@ def build_display_frames(
     d[7], d[8] = (speed >> 8) & 0xFF, speed & 0xFF
     d[12] = int(max(heart_rate, 0)) & 0xFF
     d[16] = int(max(cadence, 0)) & 0xFF
-    kcal = int(max(calories, 0)) & 0xFFFF
-    d[19], d[20] = (kcal >> 8) & 0xFF, kcal & 0xFF
+    # On the Rower 500 the "Km" field is bytes 19/20, in tenths of km (QZ puts kcal there,
+    # which this console shows as distance).
+    km10 = int(max(odometer_km, 0) * 10) & 0xFFFF
+    d[19], d[20] = (km10 >> 8) & 0xFF, km10 & 0xFF
     for index, value in over.items():
         d[index] = value
     d[26] = sum(d[:26]) & 0xFF

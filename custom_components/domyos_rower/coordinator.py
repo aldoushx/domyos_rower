@@ -42,7 +42,9 @@ from .const import (
     CONF_GPX_LAT,
     CONF_GPX_LON,
     CONF_OUTPUT_DIR,
+    CONF_INIT_MODE,
     CONF_PROTOCOL,
+    INIT_FULL,
     CONF_SPORT_TYPE,
     CONF_STRAVA,
     DEFAULT_SPORT_TYPE,
@@ -76,7 +78,7 @@ from .protocol import (
     FTMS_RESISTANCE_RANGE,
     FTMS_RESULTS,
     FTMS_SERVICE,
-    INIT_FRAMES,
+    init_frames,
     NOOP,
     PROP_NOTIFY,
     PROP_SERVICE,
@@ -1058,8 +1060,9 @@ class DomyosRowerCoordinator:
         self._step("subscribe domyos")
         await client.start_notify(PROP_NOTIFY, self._on_proprietary)
         _LOGGER.info("%s: Domyos protocol, sending init sequence", self.address)
-        for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
-            self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
+        frames = init_frames(self._opt(CONF_INIT_MODE, INIT_FULL))
+        for i, (frame, wait_answer) in enumerate(frames, 1):
+            self._step(f"domyos init frame {i}/{len(frames)}")
             await self._write(client, frame, wait_answer)
         # QZ ends its init with updateDisplay(0); here the first refresh waits ~3 s so the
         # console has finished processing the init frames (a refresh sent right away was

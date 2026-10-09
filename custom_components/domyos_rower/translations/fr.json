@@ -133,7 +133,8 @@
           "gpx_latitude": "Latitude du GPX",
           "gpx_longitude": "Longitude du GPX",
           "sport_type": "Type d’activité Strava",
-          "protocol": "Protocole Bluetooth"
+          "protocol": "Protocole Bluetooth",
+          "init_mode": "Séquence d'initialisation Domyos"
         }
       }
     },
@@ -180,6 +181,14 @@
       "options": {
         "auto": "Auto : protocole Domyos si disponible",
         "ftms": "FTMS : l'écran de la console reste complet"
+      }
+    },
+    "init_mode": {
+      "options": {
+        "full": "Complète (comme QZ, écran en mode appli)",
+        "no_bt_screen": "Sans écran Bluetooth (7 trames)",
+        "minimal": "Minimale (2 trames)",
+        "none": "Aucune : ne rien envoyer à la console"
       }
     }
   }
