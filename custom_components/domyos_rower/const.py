@@ -20,6 +20,8 @@ STATUS_CONNECTED = "connected"
 STATUS_ERROR = "error"
 STATUSES = [STATUS_DISABLED, STATUS_WAITING, STATUS_CONNECTING, STATUS_CONNECTED, STATUS_ERROR]
 
+POWERUP_SETTLE = 10.0  # wait this long after the rower reappears (power-up) before connecting
+POWERUP_GAP = 30.0  # no advertisement for this long = the rower was off / asleep
 DISPLAY_INTERVAL = 1.0  # Domyos mode: console screen refreshed once per second (like QZ)
 DISPLAY_FIRST_DELAY = 3.0  # wait after the init sequence before the first refresh
 DISTANCE_SCALE_MIN = 0.5

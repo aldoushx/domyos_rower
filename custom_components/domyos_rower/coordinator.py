@@ -46,6 +46,8 @@ from .const import (
     CONF_STRAVA,
     DEFAULT_SPORT_TYPE,
     DISPLAY_FIRST_DELAY,
+    POWERUP_GAP,
+    POWERUP_SETTLE,
     DISPLAY_INTERVAL,
     DISTANCE_SCALE_MAX,
     DISTANCE_SCALE_MIN,
@@ -160,6 +162,8 @@ class DomyosRowerCoordinator:
         self._last_t: float | None = None
         self._last_strokes: int | None = None
         self._got_packet = False
+        self._last_advert = time.monotonic()
+        self._appeared_at = float("-inf")  # when the rower last came back after being silent
 
         # FTMS state
         self._ftms_cp = None  # Control Point characteristic object
@@ -661,6 +665,10 @@ class DomyosRowerCoordinator:
     def _async_on_advert(
         self, service_info: BluetoothServiceInfoBleak, change: BluetoothChange
     ) -> None:
+        now = time.monotonic()
+        if now - self._last_advert > POWERUP_GAP:
+            self._appeared_at = now  # silent for a while: the rower has just been powered up
+        self._last_advert = now
         self._advert_event.set()
 
     def _current_ble_device(self):
@@ -693,6 +701,17 @@ class DomyosRowerCoordinator:
                 await self._advert_event.wait()
                 continue
 
+            # Connecting right when the console boots left it with a completely dark screen:
+            # after a power-up, give it time to finish starting.
+            settle = self._appeared_at + POWERUP_SETTLE - time.monotonic()
+            if settle > 0:
+                _LOGGER.info("%s: rower just powered up, waiting %.0f s before connecting", self.address, settle)
+                self._set_status(STATUS_WAITING)
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._wake_event.wait(), settle)
+                self._wake_event.clear()
+                continue
+
             started = time.monotonic()
             self._session_connected = False
             self._step("connect")
@@ -711,6 +730,7 @@ class DomyosRowerCoordinator:
                 self.last_operation = self._op
                 self._set_status(STATUS_ERROR, f"unexpected error: {_err_text(err)}")
             duration = time.monotonic() - started
+            self._last_advert = time.monotonic()  # no adverts during a session: restart the gap
             was_connected = self._session_connected
             self._set_connected(False)
             if self.status != STATUS_ERROR:
@@ -985,13 +1005,24 @@ class DomyosRowerCoordinator:
         for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
             self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
             await self._write(client, frame, wait_answer)
-        self._last_display = time.monotonic() + DISPLAY_FIRST_DELAY
+        display_start: float | None = None  # set once the console has started answering
         self._step("domyos polling")
 
         started = time.monotonic()
         self._last_packet = started
         while client.is_connected and self.enabled:
-            if self.console_display and time.monotonic() - self._last_display >= DISPLAY_INTERVAL:
+            now = time.monotonic()
+            # The screen is written only after the console has answered with status packets
+            # (+ a short wait): written earlier, right after power-up, the console stopped
+            # sending its data to HA.
+            if self._got_packet and display_start is None:
+                display_start = now + DISPLAY_FIRST_DELAY
+            if (
+                self.console_display
+                and display_start is not None
+                and now >= display_start
+                and now - self._last_display >= DISPLAY_INTERVAL
+            ):
                 await self._send_display(client)  # replaces the no-op, like QZ
             else:
                 await self._write(client, NOOP, False)
