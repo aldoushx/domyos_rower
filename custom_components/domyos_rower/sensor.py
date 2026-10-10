@@ -190,7 +190,7 @@ class DomyosRowerLastSessionSensor(DomyosRowerEntity, SensorEntity):
         if not info:
             return {}
         summary = info.get("summary", {})
-        strava = info.get("strava") or {}
+        garmin = info.get("garmin") or {}
         return {
             "name": info.get("name"),
             "folder": info.get("folder"),
@@ -205,7 +205,7 @@ class DomyosRowerLastSessionSensor(DomyosRowerEntity, SensorEntity):
             "avg_cadence": summary.get("avg_cadence"),
             "avg_power_w": summary.get("avg_power_w"),
             "avg_hr": summary.get("avg_hr"),
-            "strava_status": strava.get("status", "not sent"),
-            "strava_url": strava.get("url"),
-            "strava_error": strava.get("error"),
+            "garmin_status": garmin.get("status", "not sent"),
+            "garmin_activity_id": garmin.get("activity_id"),
+            "garmin_error": garmin.get("error"),
         }

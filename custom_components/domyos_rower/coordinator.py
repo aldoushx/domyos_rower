@@ -33,18 +33,17 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.requirements import async_process_requirements
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
     ACK_TIMEOUT,
+    CONF_GARMIN,
     CONF_GPX_LAT,
     CONF_GPX_LON,
     CONF_OUTPUT_DIR,
-    CONF_SPORT_TYPE,
-    CONF_STRAVA,
-    DEFAULT_SPORT_TYPE,
     DISPLAY_FIRST_DELAY,
     POWERUP_GAP,
     POWERUP_SETTLE,
@@ -95,7 +94,6 @@ from .protocol import (
 
 from .fit import build_fit
 from .session import SessionRecorder, build_gpx, build_tcx, file_stem
-from .strava import StravaClient, StravaError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -173,14 +171,13 @@ class DomyosRowerCoordinator:
         self._ftms_strokes: int | None = None
         self._ftms_stroke_t = 0.0
 
-        # session recording (switch) and export (files at the end, Strava on demand)
+        # session recording (switch) and export (files at the end, Garmin on demand)
         self.recorder: SessionRecorder | None = None
         self.recording = False
         self.last_session: dict | None = None
-        self.strava_busy = False
+        self.garmin_busy = False
         self._rec_mono = 0.0
         self._next_sample_mono = float("-inf")
-        self._strava_obj: StravaClient | None = None
         self._store: Store = Store(hass, 1, f"{DOMAIN}_session_{entry.entry_id}")
 
         # Console screen refresh (Domyos protocol only): once connected, the console shows only
@@ -292,8 +289,8 @@ class DomyosRowerCoordinator:
         return self.recorder is not None and len(self.recorder.samples) >= 2
 
     @property
-    def strava_configured(self) -> bool:
-        return bool(self.entry.data.get(CONF_STRAVA, {}).get("refresh_token"))
+    def garmin_configured(self) -> bool:
+        return bool(self.entry.data.get(CONF_GARMIN, {}).get("tokens"))
 
     async def async_load(self) -> None:
         """Restore the last recorded session (so the buttons keep working after a restart)."""
@@ -418,18 +415,17 @@ class DomyosRowerCoordinator:
             raise HomeAssistantError(f"écriture impossible dans « {folder} » ({err})") from err
 
         summary = rec.summary()
-        previous_strava = (
-            (self.last_session or {}).get("strava")
-            if (self.last_session or {}).get("start") == rec.start.isoformat()
-            else None
-        )
         self.last_session = {
             "start": rec.start.isoformat(),
             "name": name,
             "folder": folder,
             "files": paths,
             "summary": summary,
-            "strava": previous_strava,
+            "garmin": (
+                (self.last_session or {}).get("garmin")
+                if (self.last_session or {}).get("start") == rec.start.isoformat()
+                else None
+            ),
         }
         await self._store.async_save(self._store_data())
         self.hass.bus.async_fire(
@@ -450,65 +446,61 @@ class DomyosRowerCoordinator:
         self._push()
         return self.last_session
 
-    def _strava_client(self) -> StravaClient:
-        if self._strava_obj is None:
-            conf = self.entry.data[CONF_STRAVA]
+    async def async_upload_garmin(self) -> dict:
+        """Manual only: send the last session's FIT file to Garmin Connect."""
+        from . import garmin  # noqa: PLC0415 - optional dependency, loaded on demand
 
-            async def save(tokens: dict) -> None:
+        if not self.garmin_configured:
+            raise HomeAssistantError("Garmin Connect n'est pas configuré pour cet appareil.")
+        if self.recording:
+            raise HomeAssistantError("Arrête l'enregistrement avant d'envoyer la séance.")
+        if self.garmin_busy:
+            raise HomeAssistantError("Un envoi vers Garmin est déjà en cours.")
+        if not self.has_session and not (self.last_session or {}).get("files"):
+            raise HomeAssistantError("Aucune séance terminée à envoyer.")
+        self.garmin_busy = True
+        self._push()
+        info = self.last_session or {}
+        try:
+            fit_path = (info.get("files") or {}).get("fit")
+            if not fit_path or not await self.hass.async_add_executor_job(os.path.isfile, fit_path):
+                info = await self.async_generate_files()  # files were never written / deleted
+                fit_path = info["files"]["fit"]
+            conf = self.entry.data[CONF_GARMIN]
+            try:
+                await async_process_requirements(self.hass, DOMAIN, [garmin.GARMIN_REQUIREMENT])
+            except Exception as err:  # noqa: BLE001
+                raise garmin.GarminError(
+                    f"Impossible d'installer {garmin.GARMIN_REQUIREMENT} : {err}"
+                ) from err
+            try:
+                result, tokens = await self.hass.async_add_executor_job(
+                    garmin.upload_file, conf["tokens"], fit_path
+                )
+            except garmin.GarminError as err:
+                info = self.last_session or info
+                info["garmin"] = {"status": "error", "error": str(err)}
+                self.last_session = info
+                persistent_notification.async_create(
+                    self.hass,
+                    f"L'envoi vers Garmin Connect a échoué : {err}",
+                    title="Domyos Rower",
+                    notification_id=f"{DOMAIN}_{self.address}_garmin",
+                )
+                raise HomeAssistantError(f"Envoi Garmin impossible : {err}") from err
+            if tokens != conf["tokens"]:
                 self.hass.config_entries.async_update_entry(
                     self.entry,
-                    data={**self.entry.data, CONF_STRAVA: {**self.entry.data[CONF_STRAVA], **tokens}},
+                    data={**self.entry.data, CONF_GARMIN: {**conf, "tokens": tokens}},
                 )
-
-            self._strava_obj = StravaClient(
-                async_get_clientsession(self.hass),
-                conf["client_id"],
-                conf["client_secret"],
-                tokens=conf,
-                token_saved=save,
-            )
-        return self._strava_obj
-
-    async def async_upload_strava(self) -> dict:
-        """Manual only: send the last recorded session to Strava (TCX)."""
-        if not self.strava_configured:
-            raise HomeAssistantError("Strava n'est pas configuré pour cet appareil.")
-        if not self.has_session or self.recording:
-            raise HomeAssistantError("Aucune séance terminée à envoyer.")
-        if self.strava_busy:
-            raise HomeAssistantError("Un envoi vers Strava est déjà en cours.")
-        rec = self.recorder
-        assert rec is not None
-        name, notes, stem = self._session_texts()
-        info = self.last_session or {}
-        self.strava_busy = True
-        self._push()
-        try:
-            result = await self._strava_client().upload_activity(
-                build_tcx(rec, notes).encode("utf-8"),
-                f"{stem}.tcx",
-                name=name,
-                description=notes,
-                sport_type=self._opt(CONF_SPORT_TYPE, DEFAULT_SPORT_TYPE),
-                external_id=stem,
-            )
-        except StravaError as err:
-            info["strava"] = {"status": "error", "error": str(err)}
-            self.last_session = info
-            persistent_notification.async_create(
-                self.hass,
-                f"L'envoi vers Strava a échoué : {err}",
-                title="Domyos Rower",
-                notification_id=f"{DOMAIN}_{self.address}_strava",
-            )
-            raise HomeAssistantError(f"Envoi Strava impossible : {err}") from err
         finally:
-            self.strava_busy = False
+            self.garmin_busy = False
             self._push()
-        info["strava"] = {"status": "uploaded", "uploaded_at": dt_util.utcnow().isoformat(), **result}
+        info = self.last_session or info
+        info["garmin"] = {"status": "uploaded", "uploaded_at": dt_util.utcnow().isoformat(), **result}
         self.last_session = info
         await self._store.async_save(self._store_data())
-        persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{self.address}_strava")
+        persistent_notification.async_dismiss(self.hass, f"{DOMAIN}_{self.address}_garmin")
         self._push()
         return result
 

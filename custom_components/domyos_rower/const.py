@@ -32,11 +32,9 @@ SAMPLE_INTERVAL = 1.0  # seconds between recorded samples
 SAMPLE_TOLERANCE = 0.05  # float / scheduling jitter accepted when deciding to sample
 EVENT_SESSION_SAVED = "domyos_rower_session_saved"
 
-CONF_STRAVA = "strava"
 CONF_OUTPUT_DIR = "output_dir"
-CONF_SPORT_TYPE = "sport_type"
 CONF_GPX_LAT = "gpx_latitude"
 CONF_GPX_LON = "gpx_longitude"
-SPORT_TYPES = ["Rowing", "VirtualRow"]
-DEFAULT_SPORT_TYPE = "Rowing"
 
+
+CONF_GARMIN = "garmin"  # entry.data[CONF_GARMIN] = {"email": ..., "tokens": "<json>"}

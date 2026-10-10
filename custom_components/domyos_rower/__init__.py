@@ -20,7 +20,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     coordinator.async_start()
 
-    # Reload only when the *options* change (refreshed Strava tokens also update the entry).
+    # Reload only when the *options* change (refreshed Garmin tokens also update the entry).
     seen_options = dict(entry.options)
 
     async def _options_updated(hass: HomeAssistant, updated: ConfigEntry) -> None:

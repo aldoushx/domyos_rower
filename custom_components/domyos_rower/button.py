@@ -1,4 +1,4 @@
-"""Buttons: regenerate the export files, send the last session to Strava (manual only)."""
+"""Buttons: regenerate the export files, send the last session to Garmin Connect (manual only)."""
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -28,11 +28,14 @@ BUTTONS: tuple[RowerButtonDescription, ...] = (
         available_fn=lambda c: c.has_session and not c.recording,
     ),
     RowerButtonDescription(
-        key="upload_strava",
+        key="upload_garmin",
         icon="mdi:upload",
-        press_fn=lambda c: c.async_upload_strava(),
+        press_fn=lambda c: c.async_upload_garmin(),
         available_fn=lambda c: (
-            c.strava_configured and c.has_session and not c.recording and not c.strava_busy
+            c.garmin_configured
+            and (c.has_session or bool((c.last_session or {}).get("files")))
+            and not c.recording
+            and not c.garmin_busy
         ),
     ),
 )
@@ -45,8 +48,8 @@ async def async_setup_entry(
     async_add_entities(
         DomyosRowerButton(coordinator, desc)
         for desc in BUTTONS
-        # the Strava button only exists when Strava was configured
-        if desc.key != "upload_strava" or coordinator.strava_configured
+        # the Garmin button only exists when a Garmin account is linked
+        if desc.key != "upload_garmin" or coordinator.garmin_configured
     )
 
 

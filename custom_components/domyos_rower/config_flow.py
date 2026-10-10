@@ -1,4 +1,4 @@
-"""Config flow: Bluetooth discovery, then an optional Strava link; options for the export."""
+"""Config flow: Bluetooth discovery; options for the export folder and the optional Garmin link."""
 from __future__ import annotations
 
 import logging
@@ -17,27 +17,27 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.const import CONF_ADDRESS, CONF_NAME
+from homeassistant.requirements import async_process_requirements
 from homeassistant.core import callback
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
 from .const import (
+    CONF_GARMIN,
     CONF_GPX_LAT,
     CONF_GPX_LON,
     CONF_OUTPUT_DIR,
-    CONF_SPORT_TYPE,
-    CONF_STRAVA,
-    DEFAULT_SPORT_TYPE,
     DOMAIN,
-    SPORT_TYPES,
 )
 from .coordinator import default_output_dir
-from .strava import StravaAuthError, StravaClient, StravaError, authorize_url, extract_code
+from . import garmin
 
 _LOGGER = logging.getLogger(__name__)
 
-CONF_SETUP_STRAVA = "setup_strava"
-CONF_CLIENT_ID = "client_id"
+CONF_SETUP_GARMIN = "setup_garmin"
+CONF_REMOVE_GARMIN = "remove_garmin"
+CONF_GARMIN_EMAIL = "email"
+CONF_GARMIN_PASSWORD = "password"
+CONF_GARMIN_CODE = "code"
 CONF_CLIENT_SECRET = "client_secret"
 
 
@@ -48,7 +48,6 @@ class DomyosRowerConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovery: BluetoothServiceInfoBleak | None = None
         self._devices: dict[str, str] = {}
         self._device: dict[str, str] = {}
-        self._strava: dict[str, Any] = {}
 
     @staticmethod
     @callback
@@ -74,7 +73,7 @@ class DomyosRowerConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ADDRESS: self._discovery.address,
                 CONF_NAME: self._discovery.name,
             }
-            return await self.async_step_strava_ask()
+            return self._create_entry()
         self._set_confirm_only()
         return self.async_show_form(
             step_id="bluetooth_confirm",
@@ -90,7 +89,7 @@ class DomyosRowerConfigFlow(ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
             name = self._devices.get(address, "Domyos Rower").split(" (")[0]
             self._device = {CONF_ADDRESS: address, CONF_NAME: name}
-            return await self.async_step_strava_ask()
+            return self._create_entry()
 
         current = self._async_current_ids()
         for info in async_discovered_service_info(self.hass, True):
@@ -106,86 +105,28 @@ class DomyosRowerConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=vol.Schema({vol.Required(CONF_ADDRESS): vol.In(self._devices)}),
         )
 
-    # ------------------------------------------------------------ optional Strava
     def _create_entry(self) -> ConfigFlowResult:
-        data: dict[str, Any] = dict(self._device)
-        if self._strava:
-            data[CONF_STRAVA] = self._strava
-        return self.async_create_entry(title=self._device[CONF_NAME], data=data)
-
-    async def async_step_strava_ask(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            if user_input.get(CONF_SETUP_STRAVA):
-                return await self.async_step_strava_app()
-            return self._create_entry()
-        return self.async_show_form(
-            step_id="strava_ask",
-            data_schema=vol.Schema({vol.Required(CONF_SETUP_STRAVA, default=False): bool}),
-        )
-
-    async def async_step_strava_app(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            client_id = user_input[CONF_CLIENT_ID].strip()
-            client_secret = user_input[CONF_CLIENT_SECRET].strip()
-            if not client_id.isdigit():
-                errors[CONF_CLIENT_ID] = "invalid_client_id"
-            elif not client_secret:
-                errors[CONF_CLIENT_SECRET] = "invalid_client_secret"
-            else:
-                self._strava = {"client_id": client_id, "client_secret": client_secret}
-                return await self.async_step_strava_code()
-        return self.async_show_form(
-            step_id="strava_app",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_CLIENT_ID, default=self._strava.get("client_id", "")): str,
-                    vol.Required(CONF_CLIENT_SECRET): str,
-                }
-            ),
-            errors=errors,
-        )
-
-    async def async_step_strava_code(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            client = StravaClient(
-                async_get_clientsession(self.hass),
-                self._strava["client_id"],
-                self._strava["client_secret"],
-            )
-            try:
-                tokens = await client.exchange_code(extract_code(user_input["code"]))
-            except StravaAuthError:
-                errors["base"] = "strava_auth_failed"
-            except StravaError:
-                errors["base"] = "strava_cannot_connect"
-            else:
-                self._strava = {**self._strava, **tokens}
-                return self._create_entry()
-        return self.async_show_form(
-            step_id="strava_code",
-            data_schema=vol.Schema({vol.Required("code"): str}),
-            description_placeholders={"url": authorize_url(self._strava["client_id"])},
-            errors=errors,
-        )
+        return self.async_create_entry(title=self._device[CONF_NAME], data=dict(self._device))
 
 
 class DomyosRowerOptionsFlow(OptionsFlow):
-    """Where the TCX/GPX files go, Strava activity type, placeholder GPX position."""
+    """Export folder, placeholder GPX position, optional Garmin link."""
+
+    def __init__(self) -> None:
+        self._options: dict[str, Any] = {}
+        self._garmin_api: Any = None
+        self._garmin_email = ""
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         opts = self.config_entry.options
+        linked = bool(self.config_entry.data.get(CONF_GARMIN, {}).get("tokens"))
         if user_input is not None:
+            user_input = dict(user_input)
+            setup_garmin = user_input.pop(CONF_SETUP_GARMIN, False)
+            remove_garmin = user_input.pop(CONF_REMOVE_GARMIN, False)
             folder = (user_input.get(CONF_OUTPUT_DIR) or "").strip()
             if folder:
                 try:
@@ -193,7 +134,16 @@ class DomyosRowerOptionsFlow(OptionsFlow):
                 except OSError:
                     errors[CONF_OUTPUT_DIR] = "cannot_write"
             if not errors:
-                return self.async_create_entry(data={**user_input, CONF_OUTPUT_DIR: folder})
+                self._options = {**user_input, CONF_OUTPUT_DIR: folder}
+                if linked and not remove_garmin and not setup_garmin:
+                    self._options[CONF_GARMIN] = opts.get(CONF_GARMIN, True)
+                if remove_garmin and linked:
+                    data = {k: v for k, v in self.config_entry.data.items() if k != CONF_GARMIN}
+                    self.hass.config_entries.async_update_entry(self.config_entry, data=data)
+                    return self.async_create_entry(data=self._options)
+                if setup_garmin:
+                    return await self.async_step_garmin()
+                return self.async_create_entry(data=self._options)
 
         default_dir = opts.get(CONF_OUTPUT_DIR) or await self.hass.async_add_executor_job(
             default_output_dir, self.hass
@@ -207,13 +157,82 @@ class DomyosRowerOptionsFlow(OptionsFlow):
                 CONF_GPX_LON, default=opts.get(CONF_GPX_LON, self.hass.config.longitude)
             ): vol.Coerce(float),
         }
-        if CONF_STRAVA in self.config_entry.data:
-            schema[
-                vol.Optional(CONF_SPORT_TYPE, default=opts.get(CONF_SPORT_TYPE, DEFAULT_SPORT_TYPE))
-            ] = vol.In(SPORT_TYPES)
+        schema[vol.Optional(CONF_SETUP_GARMIN, default=False)] = bool
+        if linked:
+            schema[vol.Optional(CONF_REMOVE_GARMIN, default=False)] = bool
         return self.async_show_form(
             step_id="init", data_schema=vol.Schema(schema), errors=errors
         )
+
+    # ------------------------------------------------------------ optional Garmin Connect
+    async def async_step_garmin(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            email = user_input[CONF_GARMIN_EMAIL].strip()
+            try:
+                await async_process_requirements(self.hass, DOMAIN, [garmin.GARMIN_REQUIREMENT])
+                api, needs_mfa = await self.hass.async_add_executor_job(
+                    garmin.start_login, email, user_input[CONF_GARMIN_PASSWORD]
+                )
+            except garmin.GarminAuthError:
+                errors["base"] = "garmin_auth_failed"
+            except garmin.GarminError:
+                errors["base"] = "garmin_cannot_connect"
+            except Exception:  # noqa: BLE001 - requirement install failure etc.
+                errors["base"] = "garmin_cannot_connect"
+            else:
+                self._garmin_email = email
+                self._garmin_api = api
+                if needs_mfa:
+                    return await self.async_step_garmin_mfa()
+                return await self._finish_garmin()
+        return self.async_show_form(
+            step_id="garmin",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_GARMIN_EMAIL, default=self._garmin_email): str,
+                    vol.Required(CONF_GARMIN_PASSWORD): str,
+                }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_garmin_mfa(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                await self.hass.async_add_executor_job(
+                    garmin.finish_mfa, self._garmin_api, user_input[CONF_GARMIN_CODE]
+                )
+            except garmin.GarminAuthError:
+                errors["base"] = "garmin_mfa_failed"
+            except garmin.GarminError:
+                errors["base"] = "garmin_cannot_connect"
+            else:
+                return await self._finish_garmin()
+        return self.async_show_form(
+            step_id="garmin_mfa",
+            data_schema=vol.Schema({vol.Required(CONF_GARMIN_CODE): str}),
+            errors=errors,
+        )
+
+    async def _finish_garmin(self) -> ConfigFlowResult:
+        tokens = await self.hass.async_add_executor_job(garmin.dump_tokens, self._garmin_api)
+        self._garmin_api = None  # the password never leaves the library object, and is dropped here
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            data={
+                **self.config_entry.data,
+                CONF_GARMIN: {"email": self._garmin_email, "tokens": tokens},
+            },
+        )
+        # the "garmin" option changes so the entry reloads and the upload button appears
+        self._options[CONF_GARMIN] = self._garmin_email
+        return self.async_create_entry(data=self._options)
 
 
 def _check_writable(folder: str) -> None:
