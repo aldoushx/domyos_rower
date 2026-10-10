@@ -101,9 +101,6 @@
       },
       "recording": {
         "name": "Session recording"
-      },
-      "console_display": {
-        "name": "Console screen refresh (experimental)"
       }
     },
     "number": {
@@ -127,70 +124,17 @@
     "step": {
       "init": {
         "title": "Session export",
-        "description": "Protocol: \"auto\" uses the Domyos-specific protocol when the rower has it (like QZ): it puts the console screen in \"app\" mode (Bluetooth logo, little information). \"ftms\" forces the standard protocol, like Kinomap: the screen keeps its full display. The change applies after the integration reloads. Folder where the FIT, TCX and GPX files are written. GPX is a GPS format: an indoor session has no position, so every point uses the coordinates below (your Home Assistant home by default).",
+        "description": "Folder where the FIT, TCX and GPX files are written. GPX is a GPS format: an indoor session has no position, so every point uses the coordinates below (your Home Assistant home by default).",
         "data": {
           "output_dir": "Files folder",
           "gpx_latitude": "GPX latitude",
           "gpx_longitude": "GPX longitude",
-          "sport_type": "Strava activity type",
-          "protocol": "Bluetooth protocol",
-          "init_mode": "Domyos init sequence"
+          "sport_type": "Strava activity type"
         }
       }
     },
     "error": {
       "cannot_write": "Cannot write to this folder."
-    }
-  },
-  "services": {
-    "display_probe": {
-      "name": "Console screen probe (experimental)",
-      "description": "Domyos protocol only. Forces raw bytes of the screen frame for a few seconds to find which byte feeds which field (pace, stroke rate, calories, strokes).",
-      "fields": {
-        "preset": {
-          "name": "Preset",
-          "description": "\"numbered\" puts each unknown slot's own byte number in it: what the console shows tells which byte feeds which field."
-        },
-        "values": {
-          "name": "Screen bytes",
-          "description": "Bytes 3 to 25 of the screen frame, e.g. {\"16\": 30}. Values 0 to 255."
-        },
-        "odometer_values": {
-          "name": "Odometer bytes",
-          "description": "Bytes 3 to 25 of the odometer frame."
-        },
-        "duration": {
-          "name": "Duration",
-          "description": "Seconds during which the frame is resent every second (1 to 120)."
-        }
-      }
-    },
-    "console_workout": {
-      "name": "Console workout mode (experimental)",
-      "description": "Domyos protocol only. Sends QZ's \"start\" or \"stop\" frames, to see whether the console then shows its own measurements.",
-      "fields": {
-        "action": {
-          "name": "Action",
-          "description": "start or stop."
-        }
-      }
-    }
-  },
-  "selector": {
-    "protocol": {
-      "options": {
-        "auto": "Auto: Domyos protocol if available",
-        "ftms": "FTMS: the console screen stays complete"
-      }
-    },
-    "init_mode": {
-      "options": {
-        "full": "Full (like QZ, console in app mode)",
-        "no_bt_screen": "No Bluetooth screen (7 frames)",
-        "minimal": "Minimal (2 frames)",
-        "none": "None: send nothing to the console",
-        "passive": "Passive: FTMS without Start/Resume (experimental)"
-      }
     }
   }
 }

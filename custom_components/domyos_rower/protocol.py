@@ -51,14 +51,6 @@ INIT_FRAMES: tuple[tuple[bytes, bool], ...] = (
     (bytes.fromhex("f0adffff0005ffffffffffffff0000ffffff01ff"), False),
 )
 
-_INIT_COUNT = {"full": 12, "no_bt_screen": 7, "minimal": 2, "none": 0, "passive": 0}
-
-
-def init_frames(mode: str = "full") -> tuple[tuple[bytes, bool], ...]:
-    """Init frames to send for `mode` (see INIT_MODES)."""
-    return INIT_FRAMES[: _INIT_COUNT.get(mode, 12)]
-
-
 PROP_PACKET_LEN = 26
 RESISTANCE_MIN = 1
 RESISTANCE_MAX = 15
@@ -236,87 +228,6 @@ def parse_resistance_range(data: bytes) -> tuple[float, float, float] | None:
     if hi <= lo or hi <= 0:
         return None
     return lo, hi, inc if inc > 0 else 1.0
-
-
-# ---- console screen (Domyos protocol only): QZ's updateDisplay(), once per second --------
-_DISPLAY2_TEMPLATE = bytes([0xF0, 0xCD, 0x01, 0x00, 0x00, 0x01] + [0xFF] * 20 + [0x00])
-_DISPLAY_TEMPLATE = bytes(
-    [0xF0, 0xCB, 0x03, 0x00, 0x00, 0xFF, 0x01, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00,
-     0x01, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]
-)
-
-
-DISPLAY_OVERRIDE_RANGE = range(3, 26)  # bytes 0-2 are the header, byte 26 the checksum
-
-
-def _check_overrides(overrides: dict[int, int] | None) -> dict[int, int]:
-    clean: dict[int, int] = {}
-    for index, value in (overrides or {}).items():
-        index, value = int(index), int(value)
-        if index not in DISPLAY_OVERRIDE_RANGE:
-            raise ValueError(f"byte index {index} is outside 3..25")
-        if not 0 <= value <= 255:
-            raise ValueError(f"byte {index}: value {value} is outside 0..255")
-        clean[index] = value
-    return clean
-
-
-# Console "workout" frames from QZ (btinit_changyow(startTape=true) and "stop tape").
-CONSOLE_START_FRAMES: tuple[tuple[bytes, bool], ...] = (
-    (bytes.fromhex("ffff94"), True),
-    (bytes.fromhex("f0cbffffffffffffffffffffffff01001401ffff"), False),
-    (bytes.fromhex("ffffffffffffbd"), True),
-)
-CONSOLE_STOP_FRAME = bytes.fromhex("f0c800b8")
-
-# Numeric slots of the screen frame that are 0 in the template (3/4 = time, the rest unknown
-# or used by QZ). The "numbered" probe puts each slot's own index in it so that whatever the
-# console shows tells which byte feeds which field.
-PROBE_NUMBERED = {7: 0, 8: 8, 11: 11, 12: 12, 13: 13, 15: 15, 16: 16, 19: 0, 20: 20}
-
-
-def build_display_frames(
-    elapsed_s: int,
-    speed_kmh: float,
-    heart_rate: float,
-    strokes: float,
-    calories: float,
-    odometer_km: float,
-    overrides: dict[int, int] | None = None,
-    overrides2: dict[int, int] | None = None,
-) -> tuple[bytes, bytes, bytes, bytes]:
-    """Four chunks to write in order: (display2 20 B, display2 7 B, display 20 B, display 7 B).
-
-    `overrides` / `overrides2` force raw bytes of the screen frame (`f0 cb 03`) and of the
-    odometer frame (`f0 cd 01`) before the checksum: this is for mapping an unknown console.
-    """
-    over, over2 = _check_overrides(overrides), _check_overrides(overrides2)
-    d2 = bytearray(_DISPLAY2_TEMPLATE)
-    odo = int(max(odometer_km, 0) * 10) & 0xFFFF  # tenths of km
-    d2[3], d2[4] = (odo >> 8) & 0xFF, odo & 0xFF
-    for index, value in over2.items():
-        d2[index] = value
-    d2[26] = sum(d2[:26]) & 0xFF
-
-    d = bytearray(_DISPLAY_TEMPLATE)
-    elapsed_s = max(int(elapsed_s), 0)
-    d[3] = (elapsed_s // 60) & 0xFF
-    d[4] = (elapsed_s % 60) & 0xFF
-    speed = int(max(speed_kmh, 0)) & 0xFFFF
-    d[7], d[8] = (speed >> 8) & 0xFF, speed & 0xFF
-    d[12] = int(max(heart_rate, 0)) & 0xFF
-    # Bytes 15/16 feed the "Count" field, shown divided by 10 (probe: 0x0F10 -> 385; 27 -> 2),
-    # so the total stroke count is sent x10. The Spm and Kcal fields are still unmapped.
-    count = int(max(strokes, 0) * 10) & 0xFFFF
-    d[15], d[16] = (count >> 8) & 0xFF, count & 0xFF
-    # On the Rower 500 the "Km" field is bytes 19/20, in tenths of km (QZ puts kcal there,
-    # which this console shows as distance).
-    km10 = int(max(odometer_km, 0) * 10) & 0xFFFF
-    d[19], d[20] = (km10 >> 8) & 0xFF, km10 & 0xFF
-    for index, value in over.items():
-        d[index] = value
-    d[26] = sum(d[:26]) & 0xFF
-    return bytes(d2[:20]), bytes(d2[20:]), bytes(d[:20]), bytes(d[20:])
 
 
 def format_pace(seconds: int | None) -> str | None:

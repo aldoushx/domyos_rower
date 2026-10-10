@@ -101,9 +101,6 @@
       },
       "recording": {
         "name": "Enregistrement de la séance"
-      },
-      "console_display": {
-        "name": "Écran de la console (expérimental)"
       }
     },
     "number": {
@@ -127,70 +124,17 @@
     "step": {
       "init": {
         "title": "Export des séances",
-        "description": "Protocole : « auto » utilise le protocole propre à Domyos quand le rameur l'a (comme QZ) : il met l'écran de la console en mode « application » (logo Bluetooth, peu d'informations). « ftms » force le protocole standard, comme Kinomap : l'écran garde son affichage complet. Le changement s'applique après rechargement de l'intégration. Dossier où sont écrits les fichiers FIT, TCX et GPX. Le GPX est un format GPS : une séance d'intérieur n'a pas de position, tous ses points utilisent donc les coordonnées ci-dessous (par défaut celles de ta maison dans HA).",
+        "description": "Dossier où sont écrits les fichiers FIT, TCX et GPX. Le GPX est un format GPS : une séance d'intérieur n'a pas de position, tous ses points utilisent donc les coordonnées ci-dessous (par défaut celles de ta maison dans HA).",
         "data": {
           "output_dir": "Dossier des fichiers",
           "gpx_latitude": "Latitude du GPX",
           "gpx_longitude": "Longitude du GPX",
-          "sport_type": "Type d’activité Strava",
-          "protocol": "Protocole Bluetooth",
-          "init_mode": "Séquence d'initialisation Domyos"
+          "sport_type": "Type d’activité Strava"
         }
       }
     },
     "error": {
       "cannot_write": "Impossible d'écrire dans ce dossier."
-    }
-  },
-  "services": {
-    "display_probe": {
-      "name": "Test de l'écran de la console (expérimental)",
-      "description": "Protocole Domyos uniquement. Force des octets bruts de la trame d'écran pendant quelques secondes pour découvrir quel octet alimente quel champ (allure, cadence, calories, coups). Un seul rameur est visé s'il n'y en a qu'un.",
-      "fields": {
-        "preset": {
-          "name": "Préréglage",
-          "description": "« numbered » met dans chaque emplacement inconnu un nombre égal à son numéro d'octet : ce que la console affiche dit quel octet alimente quel champ."
-        },
-        "values": {
-          "name": "Octets de l'écran",
-          "description": "Octets 3 à 25 de la trame d'écran, par exemple {\"16\": 30}. Les valeurs vont de 0 à 255."
-        },
-        "odometer_values": {
-          "name": "Octets du compteur",
-          "description": "Octets 3 à 25 de la trame du compteur kilométrique."
-        },
-        "duration": {
-          "name": "Durée",
-          "description": "Secondes pendant lesquelles la trame est renvoyée chaque seconde (1 à 120)."
-        }
-      }
-    },
-    "console_workout": {
-      "name": "Séance sur la console (expérimental)",
-      "description": "Protocole Domyos uniquement. Envoie les trames « démarrer » ou « arrêter » de QZ, pour voir si la console affiche alors ses propres mesures.",
-      "fields": {
-        "action": {
-          "name": "Action",
-          "description": "start ou stop."
-        }
-      }
-    }
-  },
-  "selector": {
-    "protocol": {
-      "options": {
-        "auto": "Auto : protocole Domyos si disponible",
-        "ftms": "FTMS : l'écran de la console reste complet"
-      }
-    },
-    "init_mode": {
-      "options": {
-        "full": "Complète (comme QZ, écran en mode appli)",
-        "no_bt_screen": "Sans écran Bluetooth (7 trames)",
-        "minimal": "Minimale (2 trames)",
-        "none": "Aucune : ne rien envoyer à la console",
-        "passive": "Passive : FTMS sans Start/Resume (expérimental)"
-      }
     }
   }
 }

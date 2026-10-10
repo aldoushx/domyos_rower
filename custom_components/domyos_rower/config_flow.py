@@ -23,18 +23,12 @@ from homeassistant.helpers.selector import SelectSelector, SelectSelectorConfig
 
 from .const import (
     CONF_GPX_LAT,
-    CONF_INIT_MODE,
-    INIT_FULL,
-    INIT_MODES,
     CONF_GPX_LON,
     CONF_OUTPUT_DIR,
-    CONF_PROTOCOL,
     CONF_SPORT_TYPE,
     CONF_STRAVA,
     DEFAULT_SPORT_TYPE,
     DOMAIN,
-    PROTOCOL_AUTO,
-    PROTOCOLS,
     SPORT_TYPES,
 )
 from .coordinator import default_output_dir
@@ -205,16 +199,6 @@ class DomyosRowerOptionsFlow(OptionsFlow):
             default_output_dir, self.hass
         )
         schema: dict[Any, Any] = {
-            vol.Optional(
-                CONF_PROTOCOL, default=opts.get(CONF_PROTOCOL, PROTOCOL_AUTO)
-            ): SelectSelector(
-                SelectSelectorConfig(options=PROTOCOLS, translation_key="protocol", mode="list")
-            ),
-            vol.Optional(
-                CONF_INIT_MODE, default=opts.get(CONF_INIT_MODE, INIT_FULL)
-            ): SelectSelector(
-                SelectSelectorConfig(options=INIT_MODES, translation_key="init_mode", mode="list")
-            ),
             vol.Optional(CONF_OUTPUT_DIR, default=default_dir): str,
             vol.Optional(
                 CONF_GPX_LAT, default=opts.get(CONF_GPX_LAT, self.hass.config.latitude)
