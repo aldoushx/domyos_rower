@@ -11,39 +11,11 @@
       },
       "bluetooth_confirm": {
         "description": "Veux-tu configurer {name} ?"
-      },
-      "strava_ask": {
-        "title": "Envoi vers Strava (facultatif)",
-        "description": "Les fichiers TCX, GPX et FIT de chaque séance sont toujours créés à l'arrêt de l'enregistrement. Veux-tu en plus pouvoir envoyer une séance à Strava avec un bouton ? (Rien n'est jamais envoyé automatiquement.) ⚠️ Depuis juin 2026, l'API de Strava exige un abonnement Strava payant : sans abonnement, laisse décoché, les fichiers sont créés quand même et tu peux les importer toi-même.",
-        "data": {
-          "setup_strava": "Configurer l'envoi vers Strava"
-        }
-      },
-      "strava_app": {
-        "title": "Application Strava",
-        "description": "1. Ouvre https://www.strava.com/settings/api et crée ton application API (nom et site libres).\n2. Mets **localhost** dans « Domaine de rappel d'autorisation ».\n3. Recopie ici l'**ID client** (un nombre) et le **Code secret du client**.",
-        "data": {
-          "client_id": "ID client",
-          "client_secret": "Code secret du client"
-        }
-      },
-      "strava_code": {
-        "title": "Autoriser l'accès à Strava",
-        "description": "1. Ouvre ce lien et clique sur « Autoriser » : {url}\n2. Le navigateur affichera une page d'erreur (localhost) : c'est normal.\n3. Copie l'**adresse complète** de cette page (ou juste la valeur après `code=`) et colle-la ci-dessous.",
-        "data": {
-          "code": "Adresse ou code"
-        }
       }
     },
     "abort": {
       "no_devices_found": "Aucun rameur Domyos trouvé. Réveille-le (tire la poignée) et vérifie qu'un adaptateur ou proxy Bluetooth est à portée.",
       "already_configured": "Ce rameur est déjà configuré."
-    },
-    "error": {
-      "invalid_client_id": "L'ID client doit être un nombre.",
-      "invalid_client_secret": "Le code secret est obligatoire.",
-      "strava_auth_failed": "Strava a refusé ce code. Recommence l'autorisation (le code ne sert qu'une fois et expire vite).",
-      "strava_cannot_connect": "Impossible de joindre Strava."
     }
   },
   "entity": {
@@ -118,8 +90,8 @@
       "generate_files": {
         "name": "Générer les fichiers (TCX, GPX, FIT)"
       },
-      "upload_strava": {
-        "name": "Envoyer la dernière séance à Strava"
+      "upload_garmin": {
+        "name": "Envoyer la dernière séance à Garmin Connect"
       }
     }
   },
@@ -132,12 +104,31 @@
           "output_dir": "Dossier des fichiers",
           "gpx_latitude": "Latitude du GPX",
           "gpx_longitude": "Longitude du GPX",
-          "sport_type": "Type d’activité Strava"
+          "setup_garmin": "Relier (ou relier de nouveau) mon compte Garmin Connect",
+          "remove_garmin": "Supprimer le lien avec Garmin Connect"
+        }
+      },
+      "garmin": {
+        "title": "Compte Garmin Connect",
+        "description": "L'envoi vers Garmin utilise une connexion **non officielle** (bibliothèque garminconnect) : elle peut cesser de fonctionner si Garmin change sa connexion. Ton mot de passe sert une seule fois à ouvrir la session ; seul l'e-mail et le jeton de session sont conservés.",
+        "data": {
+          "email": "E-mail Garmin",
+          "password": "Mot de passe Garmin"
+        }
+      },
+      "garmin_mfa": {
+        "title": "Vérification en deux étapes",
+        "description": "Garmin t'a envoyé un code de vérification (e-mail ou application). Saisis-le.",
+        "data": {
+          "code": "Code de vérification"
         }
       }
     },
     "error": {
-      "cannot_write": "Impossible d'écrire dans ce dossier."
+      "cannot_write": "Impossible d'écrire dans ce dossier.",
+      "garmin_auth_failed": "Garmin a refusé l'e-mail ou le mot de passe.",
+      "garmin_cannot_connect": "Connexion à Garmin impossible (réseau, limite de tentatives, ou installation de la bibliothèque).",
+      "garmin_mfa_failed": "Code de vérification refusé."
     }
   }
 }
