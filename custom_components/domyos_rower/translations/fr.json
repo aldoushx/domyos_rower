@@ -101,6 +101,9 @@
       },
       "recording": {
         "name": "Enregistrement de la séance"
+      },
+      "console_display": {
+        "name": "Écran de la console"
       }
     },
     "number": {

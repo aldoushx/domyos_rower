@@ -45,6 +45,8 @@ from .const import (
     CONF_SPORT_TYPE,
     CONF_STRAVA,
     DEFAULT_SPORT_TYPE,
+    DISPLAY_FIRST_DELAY,
+    DISPLAY_INTERVAL,
     DISTANCE_SCALE_MAX,
     DISTANCE_SCALE_MIN,
     DOMAIN,
@@ -73,6 +75,7 @@ from .protocol import (
     FTMS_SERVICE,
     INIT_FRAMES,
     NOOP,
+    build_display_frames,
     PROP_NOTIFY,
     PROP_SERVICE,
     PROP_WRITE,
@@ -176,6 +179,11 @@ class DomyosRowerCoordinator:
         self._strava_obj: StravaClient | None = None
         self._store: Store = Store(hass, 1, f"{DOMAIN}_session_{entry.entry_id}")
 
+        # Console screen refresh (Domyos protocol only): once connected, the console shows only
+        # what is written to it. ON by default; the switch turns it off.
+        self.console_display = True
+        self._last_display = 0.0
+
         # distance calibration (multiplier applied to distance and what derives from it)
         self.distance_scale = 1.0
 
@@ -221,6 +229,11 @@ class DomyosRowerCoordinator:
             pace_s500=pace,
             power_w=power,
         )
+
+    @callback
+    def async_set_console_display(self, value: bool) -> None:
+        self.console_display = bool(value)
+        self._push()
 
     @callback
     def async_set_distance_scale(self, value: float) -> None:
@@ -949,6 +962,21 @@ class DomyosRowerCoordinator:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._answer_event.wait(), ACK_TIMEOUT)
 
+    async def _send_display(self, client) -> None:
+        """Write time, pace, stroke count and distance on the console screen."""
+        d = self.view
+        frames = build_display_frames(
+            d.elapsed_s or 0, d.pace_s500, d.strokes or 0, (d.distance_m or 0) / 1000.0
+        )
+        previous = self._op
+        self._step("domyos display")
+        await self._write(client, frames[0], False)
+        await self._write(client, frames[1], True)
+        await self._write(client, frames[2], False)
+        await self._write(client, frames[3], True)
+        self._step(previous)
+        self._last_display = time.monotonic()
+
     async def _run_proprietary(self, client) -> bool:
         """Returns True if the console answered with status packets, False if silent."""
         self._step("subscribe domyos")
@@ -957,12 +985,16 @@ class DomyosRowerCoordinator:
         for i, (frame, wait_answer) in enumerate(INIT_FRAMES, 1):
             self._step(f"domyos init frame {i}/{len(INIT_FRAMES)}")
             await self._write(client, frame, wait_answer)
+        self._last_display = time.monotonic() + DISPLAY_FIRST_DELAY
         self._step("domyos polling")
 
         started = time.monotonic()
         self._last_packet = started
         while client.is_connected and self.enabled:
-            await self._write(client, NOOP, False)
+            if self.console_display and time.monotonic() - self._last_display >= DISPLAY_INTERVAL:
+                await self._send_display(client)  # replaces the no-op, like QZ
+            else:
+                await self._write(client, NOOP, False)
             await self._send_pending_resistance(client)
             self._tick_derived(time.monotonic())
             await asyncio.sleep(POLL_INTERVAL)

@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .const import DOMAIN
 from .coordinator import DomyosRowerCoordinator
@@ -20,6 +21,7 @@ async def async_setup_entry(
         [
             DomyosRowerConnectionSwitch(coordinator),
             DomyosRowerRecordingSwitch(coordinator),
+            DomyosRowerDisplaySwitch(coordinator),
         ]
     )
 
@@ -67,3 +69,40 @@ class DomyosRowerRecordingSwitch(DomyosRowerEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs) -> None:
         await self.coordinator.async_stop_recording()
+
+
+class DomyosRowerDisplaySwitch(DomyosRowerEntity, SwitchEntity, RestoreEntity):
+    """Write time, pace, stroke count and distance on the console screen (Domyos protocol)."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:monitor-dashboard"
+
+    def __init__(self, coordinator: DomyosRowerCoordinator) -> None:
+        super().__init__(coordinator, "console_display")
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state == "off":
+            self.coordinator.async_set_console_display(False)
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.console_display
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {
+            "protocol": self.coordinator.mode,
+            "has_effect": self.coordinator.mode == "proprietary",
+        }
+
+    async def async_turn_on(self, **kwargs) -> None:
+        self.coordinator.async_set_console_display(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self.coordinator.async_set_console_display(False)

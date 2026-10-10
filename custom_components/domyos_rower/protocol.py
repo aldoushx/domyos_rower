@@ -230,6 +230,50 @@ def parse_resistance_range(data: bytes) -> tuple[float, float, float] | None:
     return lo, hi, inc if inc > 0 else 1.0
 
 
+# ---- console screen (Domyos protocol only) ------------------------------------------------
+# Once a Bluetooth client is connected the console stops showing its own measurements: it shows
+# only what the client writes. Fields decoded on a Rower 500 (QZ log + numbered probe):
+#   bytes 3/4    Time (minutes, seconds)
+#   bytes 11/12  Time/500M, as decimal digits M*100+SS (2:58 -> 258; 2828 shows "8:28")
+#   bytes 15/16  Count, shown divided by 10 (so strokes x 10)
+#   bytes 19/20  Km, in tenths of km
+# Spm and Kcal have no known byte (QZ writes neither). Byte 12 is NOT the heart rate here.
+_DISPLAY2_TEMPLATE = bytes([0xF0, 0xCD, 0x01, 0x00, 0x00, 0x01] + [0xFF] * 20 + [0x00])
+_DISPLAY_TEMPLATE = bytes(
+    [0xF0, 0xCB, 0x03, 0x00, 0x00, 0xFF, 0x01, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00,
+     0x01, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0x00]
+)
+
+
+def pace_digits(pace_s500: int | None) -> int:
+    """Pace per 500 m as the number the console reads as M:SS (178 s -> 258, capped at 9:59)."""
+    if not pace_s500 or pace_s500 <= 0:
+        return 0
+    pace_s500 = min(int(pace_s500), 599)
+    return (pace_s500 // 60) * 100 + pace_s500 % 60
+
+
+def build_display_frames(
+    elapsed_s: int, pace_s500: int | None, strokes: int, odometer_km: float
+) -> tuple[bytes, bytes, bytes, bytes]:
+    """Four chunks to write in order: (odometer 20 B, odometer 7 B, screen 20 B, screen 7 B)."""
+    d2 = bytearray(_DISPLAY2_TEMPLATE)
+    odo = int(max(odometer_km, 0) * 10) & 0xFFFF
+    d2[3], d2[4] = (odo >> 8) & 0xFF, odo & 0xFF
+    d2[26] = sum(d2[:26]) & 0xFF
+
+    d = bytearray(_DISPLAY_TEMPLATE)
+    elapsed_s = max(int(elapsed_s), 0)
+    d[3], d[4] = (elapsed_s // 60) & 0xFF, (elapsed_s % 60) & 0xFF
+    p = pace_digits(pace_s500)
+    d[11], d[12] = (p >> 8) & 0xFF, p & 0xFF
+    count = int(max(strokes or 0, 0) * 10) & 0xFFFF
+    d[15], d[16] = (count >> 8) & 0xFF, count & 0xFF
+    d[19], d[20] = (odo >> 8) & 0xFF, odo & 0xFF
+    d[26] = sum(d[:26]) & 0xFF
+    return bytes(d2[:20]), bytes(d2[20:]), bytes(d[:20]), bytes(d[20:])
+
+
 def format_pace(seconds: int | None) -> str | None:
     """Pace per 500 m as mm:ss (178 -> '02:58')."""
     if seconds is None or seconds <= 0:

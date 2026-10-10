@@ -101,6 +101,9 @@
       },
       "recording": {
         "name": "Session recording"
+      },
+      "console_display": {
+        "name": "Console screen"
       }
     },
     "number": {
