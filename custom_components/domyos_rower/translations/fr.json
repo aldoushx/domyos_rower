@@ -65,6 +65,15 @@
       },
       "last_session": {
         "name": "Dernière séance"
+      },
+      "workout_status": {
+        "name": "Programme",
+        "state": {
+          "idle": "Aucun programme en cours",
+          "paused": "En pause",
+          "running": "En cours",
+          "finished": "Terminé"
+        }
       }
     },
     "switch": {
@@ -92,6 +101,11 @@
       },
       "upload_garmin": {
         "name": "Envoyer la dernière séance à Garmin Connect"
+      }
+    },
+    "select": {
+      "workout": {
+        "name": "Entraînement"
       }
     }
   },
