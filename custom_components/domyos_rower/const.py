@@ -38,3 +38,6 @@ CONF_GPX_LON = "gpx_longitude"
 
 
 CONF_GARMIN = "garmin"  # entry.data[CONF_GARMIN] = {"email": ..., "tokens": "<json>"}
+
+# --- workouts
+WORKOUT_ROW_IDLE = 8.0  # no new stroke for this long = the user stopped rowing -> workout paused

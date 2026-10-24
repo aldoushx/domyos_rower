@@ -39,6 +39,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    WORKOUT_ROW_IDLE,
     ACK_TIMEOUT,
     CONF_GARMIN,
     CONF_GPX_LAT,
@@ -93,6 +94,14 @@ from .protocol import (
 )
 
 from .fit import build_fit
+from .workouts import (
+    IDLE,
+    MAX_WORKOUTS,
+    WorkoutError,
+    WorkoutRunner,
+    default_workouts,
+    validate_workout,
+)
 from .session import SessionRecorder, build_gpx, build_tcx, file_stem
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,6 +128,14 @@ def _write_files(folder: str, stem: str, tcx: str, gpx: str, fit: bytes) -> dict
 
 def _err_text(err: BaseException) -> str:
     return f"{type(err).__name__}: {err}" if str(err) else type(err).__name__
+
+
+def to_float(value, default: float) -> float:
+    """float(value), or default when it is empty / not a number (blank option field)."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 class DomyosRowerCoordinator:
@@ -179,6 +196,13 @@ class DomyosRowerCoordinator:
         self._rec_mono = 0.0
         self._next_sample_mono = float("-inf")
         self._store: Store = Store(hass, 1, f"{DOMAIN}_session_{entry.entry_id}")
+
+        # workouts (resistance programs): saved list, the chosen one, and the player
+        self._workout_store: Store = Store(hass, 1, f"{DOMAIN}_workouts_{entry.entry_id}")
+        self.workouts: list[dict] = default_workouts()
+        self.selected_workout: str | None = None
+        self.workout_runner = WorkoutRunner()
+        self._wk_t = 0.0
 
         # Console screen refresh (Domyos protocol only): once connected, the console shows only
         # what is written to it. ON by default; the switch turns it off.
@@ -270,6 +294,7 @@ class DomyosRowerCoordinator:
         dt = min(max(now - self._tick_t, 0.0), 1.0)
         self._tick_t = now
         self._sample(now)
+        self._workout_tick(now)
         if self._rower_sends_elapsed:
             return
         if now - self._last_stroke_change <= FTMS_STROKE_IDLE:
@@ -277,6 +302,95 @@ class DomyosRowerCoordinator:
         elapsed = int(self._active_time)
         if self.data.elapsed_s != elapsed:
             self.data = replace(self.data, elapsed_s=elapsed)
+            self._push()
+
+    # ------------------------------------------------------------ workouts
+    def _level_bounds(self) -> tuple[int, int]:
+        lo, hi, _ = self.resistance_range
+        return int(round(lo)), int(round(hi))
+
+    def _workout_by_id(self, wid: str | None) -> dict | None:
+        return next((w for w in self.workouts if w["id"] == wid), None)
+
+    @property
+    def selected_workout_name(self) -> str | None:
+        w = self._workout_by_id(self.selected_workout)
+        return w["name"] if w else None
+
+    async def _async_save_workouts(self) -> None:
+        await self._workout_store.async_save(
+            {"workouts": self.workouts, "selected": self.selected_workout}
+        )
+        self._push()
+
+    async def async_save_workout(self, raw: dict) -> dict:
+        """Create or replace a workout (raises WorkoutError with a message the editor shows)."""
+        clean = validate_workout(raw, *self._level_bounds())
+        names = {w["name"].casefold() for w in self.workouts if w["id"] != clean["id"]}
+        if clean["name"].casefold() in names:
+            raise WorkoutError("Un entraînement porte déjà ce nom")
+        for i, w in enumerate(self.workouts):
+            if w["id"] == clean["id"]:
+                self.workouts[i] = clean
+                break
+        else:
+            if len(self.workouts) >= MAX_WORKOUTS:
+                raise WorkoutError("Trop d'entraînements, supprime-en un")
+            self.workouts.append(clean)
+        await self._async_save_workouts()
+        return clean
+
+    async def async_delete_workout(self, wid: str) -> None:
+        self.workouts = [w for w in self.workouts if w["id"] != wid]
+        if self.selected_workout == wid:
+            self.selected_workout = None
+        await self._async_save_workouts()
+
+    async def async_select_workout(self, wid: str | None) -> None:
+        if wid is not None and not self._workout_by_id(wid):
+            raise WorkoutError("Entraînement inconnu")
+        self.selected_workout = wid
+        await self._async_save_workouts()
+
+    def _workout_apply(self) -> None:
+        """Send the level of the current step once the rower accepts commands."""
+        level = self.workout_runner.pending_level
+        if level is None or not self.can_set_resistance:
+            return
+        try:
+            self.async_set_resistance(level)
+        except HomeAssistantError:
+            return
+        self.workout_runner.mark_applied()
+
+    def _workout_start(self) -> None:
+        workout = self._workout_by_id(self.selected_workout)
+        self.workout_runner.reset()
+        if workout and self.workout_runner.start(workout):
+            self._wk_t = time.monotonic()
+            self._workout_apply()
+            _LOGGER.info("%s: workout « %s » armed", self.address, workout["name"])
+
+    def _workout_stop(self) -> None:
+        runner = self.workout_runner
+        if runner.state == IDLE:
+            return
+        end_level = (runner.workout or {}).get("end_level")
+        runner.stop()
+        if end_level is not None and self.can_set_resistance:
+            with suppress(HomeAssistantError):
+                self.async_set_resistance(end_level)
+
+    def _workout_tick(self, now: float) -> None:
+        runner = self.workout_runner
+        if not runner.active:
+            return
+        dt = min(max(now - self._wk_t, 0.0), 1.0)
+        self._wk_t = now
+        rowing = (now - self._last_stroke_change) <= WORKOUT_ROW_IDLE
+        changed = runner.tick(dt, rowing)
+        self._workout_apply()
+        if changed:
             self._push()
 
     # ------------------------------------------------------------ session recording
@@ -298,6 +412,17 @@ class DomyosRowerCoordinator:
         if data and data.get("session"):
             self.recorder = SessionRecorder.from_dict(data["session"])
             self.last_session = data.get("info")
+        wk = await self._workout_store.async_load()
+        if wk and isinstance(wk.get("workouts"), list):
+            clean = []
+            for raw in wk["workouts"]:
+                try:
+                    clean.append(validate_workout(raw, *self._level_bounds()))
+                except WorkoutError:
+                    _LOGGER.warning("Entraînement ignoré (invalide) : %s", raw)
+            self.workouts = clean
+            sel = wk.get("selected")
+            self.selected_workout = sel if any(w["id"] == sel for w in clean) else None
 
     def _store_data(self) -> dict:
         return {
@@ -339,6 +464,7 @@ class DomyosRowerCoordinator:
         self._next_sample_mono = float("-inf")
         self._active_time = 0.0  # the workout timer starts with the recording
         self.recording = True
+        self._workout_start()
         _LOGGER.info("%s: session recording started", self.address)
         self._push()
 
@@ -347,6 +473,7 @@ class DomyosRowerCoordinator:
         if not self.recording:
             return
         self.recording = False
+        self._workout_stop()
         self._push()
         if not self.has_session:
             _LOGGER.info("%s: recording stopped with no data, nothing exported", self.address)
@@ -397,8 +524,8 @@ class DomyosRowerCoordinator:
         folder = self._opt(CONF_OUTPUT_DIR) or await self.hass.async_add_executor_job(
             default_output_dir, self.hass
         )
-        lat = float(self._opt(CONF_GPX_LAT, self.hass.config.latitude))
-        lon = float(self._opt(CONF_GPX_LON, self.hass.config.longitude))
+        lat = to_float(self._opt(CONF_GPX_LAT), self.hass.config.latitude)
+        lon = to_float(self._opt(CONF_GPX_LON), self.hass.config.longitude)
         tcx = build_tcx(rec, notes)
         gpx = build_gpx(rec, name, lat, lon)
         offset = dt_util.as_local(rec.start).utcoffset()

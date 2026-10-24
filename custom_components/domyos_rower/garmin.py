@@ -11,7 +11,7 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
-GARMIN_REQUIREMENT = "garminconnect==0.3.17"
+GARMIN_REQUIREMENT = "garminconnect>=0.3.17,<0.4"
 
 
 class GarminError(Exception):

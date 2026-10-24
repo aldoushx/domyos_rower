@@ -237,9 +237,9 @@ class DomyosRowerOptionsFlow(OptionsFlow):
 
 def _check_writable(folder: str) -> None:
     import os
+    import tempfile
 
     os.makedirs(folder, exist_ok=True)
-    probe = os.path.join(folder, ".write_test")
-    with open(probe, "w", encoding="utf-8") as fh:
-        fh.write("ok")
-    os.remove(probe)
+    # unique temp file: never clobbers an existing file, removed on close
+    with tempfile.NamedTemporaryFile(dir=folder, prefix=".domyos_write_test_") as fh:
+        fh.write(b"ok")

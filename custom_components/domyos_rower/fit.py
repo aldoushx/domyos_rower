@@ -95,8 +95,8 @@ def build_fit(
     end = start + int(round(session.duration_s))
     elapsed_ms = int(round(session.duration_s * 1000))
     timer_ms = int(summ["timer_s"]) * 1000
-    cm = lambda m: m * 100  # noqa: E731 - metres -> FIT centimetres
-    mm = lambda v: v * 1000  # noqa: E731 - m/s -> mm/s
+    cm = lambda m: (m or 0) * 100  # noqa: E731 - metres -> FIT centimetres
+    mm = lambda v: (v or 0) * 1000  # noqa: E731 - m/s -> mm/s
 
     w = _Writer()
     w.define(0, FILE_ID, [(0, ENUM, 1), (1, UINT16, 2), (2, UINT16, 2), (3, UINT32Z, 4),

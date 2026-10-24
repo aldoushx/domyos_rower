@@ -26,6 +26,7 @@ from .const import DOMAIN, STATUSES
 from .coordinator import DomyosRowerCoordinator
 from .entity import DomyosRowerEntity
 from .protocol import RowerData, format_pace
+from .workouts import RUNNER_STATES
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -116,7 +117,11 @@ async def async_setup_entry(
     coordinator: DomyosRowerCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [DomyosRowerSensor(coordinator, desc) for desc in SENSORS]
-        + [DomyosRowerStatusSensor(coordinator), DomyosRowerLastSessionSensor(coordinator)]
+        + [
+            DomyosRowerStatusSensor(coordinator),
+            DomyosRowerLastSessionSensor(coordinator),
+            DomyosRowerWorkoutSensor(coordinator),
+        ]
     )
 
 
@@ -209,3 +214,24 @@ class DomyosRowerLastSessionSensor(DomyosRowerEntity, SensorEntity):
             "garmin_activity_id": garmin.get("activity_id"),
             "garmin_error": garmin.get("error"),
         }
+
+
+class DomyosRowerWorkoutSensor(DomyosRowerEntity, SensorEntity):
+    """State of the workout player; the current step is in the attributes."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = RUNNER_STATES
+    _attr_icon = "mdi:chart-areaspline"
+
+    def __init__(self, coordinator: DomyosRowerCoordinator) -> None:
+        super().__init__(coordinator, "workout_status")
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.workout_runner.state
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        attrs = {"selected": self.coordinator.selected_workout_name}
+        attrs.update(self.coordinator.workout_runner.attributes())
+        return attrs
