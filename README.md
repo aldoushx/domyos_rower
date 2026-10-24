@@ -207,9 +207,3 @@ Remplace l'automatisation « Entraînement pyramides » (et son `input_boolean`)
 - Nouvelles entités : `select` « Entraînement » (choix du programme), capteur « Programme » (état `idle`, `paused`, `running`, `finished` ; attributs : palier, niveau, niveau suivant, temps restant du palier, temps écoulé et total).
 - API WebSocket utilisée par la carte : `domyos_rower/workouts` (liste), `/save`, `/delete`, `/select` (enregistrer et supprimer demandent un compte administrateur).
 - Le niveau de résistance maximal vient du rameur (15 sur le Rower 500).
-
-### v0.15.1
-- La prise connectée du rameur n est plus gérée par la carte (retirée de la carte JS et de la carte YAML).
-
-### v0.15.2
-- La prise connectée du rameur redevient disponible, toujours facultative : le bouton n apparaît que si `plug_entity` est renseigné dans la carte JS. Dans la carte YAML, supprime le bloc « Prise rameur » si tu n en as pas.
