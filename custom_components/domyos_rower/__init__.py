@@ -36,6 +36,7 @@ async def _async_register_card(hass: HomeAssistant) -> None:
             [StaticPathConfig(CARD_URL, str(folder / "domyos-rower-card.js"), False)]
         )
         add_extra_js_url(hass, f"{CARD_URL}?v={version}")
+        _LOGGER.info("Carte Lovelace Domyos Rower servie sur %s", CARD_URL)
     except Exception as err:  # noqa: BLE001 - the card is optional, never block the integration
         _LOGGER.warning("Impossible d'enregistrer la carte Lovelace Domyos Rower : %s", err)
 
